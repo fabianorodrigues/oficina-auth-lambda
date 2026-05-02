@@ -1,0 +1,28 @@
+# .NET
+bin/
+obj/
+TestResults/
+coverage/
+coverage-report/
+*.trx
+*.coverage
+*.coveragexml
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Local secrets and deployment artifacts
+.env
+*.env
+*.zip
+*.tfvars
+terraform.tfvars
+
+# OS / temp
+Thumbs.db
+.DS_Store
+*.tmp
+*.temp
