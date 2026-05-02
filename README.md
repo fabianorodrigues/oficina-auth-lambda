@@ -2,9 +2,8 @@
 
 Lambda oficial de autenticacao da Fase 3 da Oficina API.
 
-Este repositorio contem apenas o codigo serverless de autenticacao por CPF/senha, o Lambda Authorizer JWT, testes automatizados e workflows de CI/deploy manual. A API principal fica no repositorio irmao `../oficina-api`; a infraestrutura do RDS SQL Server fica em `../oficina-infra-db`.
+Este repositorio contem apenas o codigo serverless de autenticacao por CPF, o Lambda Authorizer JWT, testes automatizados e workflows de CI/deploy manual.
 
-Nao ha Terraform, Kubernetes, Dockerfile da API, `.env` real, secrets reais, `terraform.tfvars` ou pasta `docs` neste repositorio.
 
 ## Arquitetura
 
@@ -54,30 +53,6 @@ Responsabilidades:
 - `Configuration`: leitura e validacao de variaveis de ambiente.
 - `Serialization`: serializer JSON usado pelo runtime Lambda.
 - `DependencyInjection.cs`: cria um `ServiceProvider` unico por container Lambda e reaproveitado entre invocacoes.
-
-A `SqlConnectionFactory` pode ser singleton, mas cada repository abre e descarta uma nova `SqlConnection` por operacao. Nenhuma conexao SQL e mantida como singleton.
-
-## Compatibilidade com oficina-api
-
-O contrato foi alinhado com `../oficina-api`:
-
-- rota original: `POST /api/auth/cpf`;
-- cliente: tabela `Clientes`, coluna `Documento`;
-- funcionario/admin: tabela `Funcionarios`, colunas `Cpf`, `SenhaHash`, `Perfil`, `Ativo`;
-- perfil interno: `1 = Funcionario`, `2 = Admin`;
-- senha: `Microsoft.AspNetCore.Identity.PasswordHasher<object>`;
-- roles: `Cliente`, `Funcionario`, `Admin`;
-- JWT HS256 com `ClaimTypes.Role`, `cpf`, `clienteId` ou `funcionarioId`;
-- issuer/audience padrao local: `Oficina.Api`.
-
-O schema atual de `Clientes` nao possui coluna `Ativo`; por isso clientes encontrados no banco sao considerados ativos.
-
-## Padrao de idioma
-
-- README: portugues.
-- Logs, excecoes tecnicas e mensagens internas: ingles.
-- Campos JSON permanecem exatamente como a API espera: `cpf`, `senha`, `accessToken`, `expiresIn`, `perfil`, `clienteId`, `funcionarioId`, `erro`, `isAuthorized`, `context`.
-- Valores de perfil nao sao traduzidos: `Cliente`, `Funcionario`, `Admin`.
 
 ## Variaveis de ambiente da Lambda
 
@@ -131,8 +106,6 @@ LAMBDA_SECURITY_GROUP_IDS
 arn:aws:iam::<account-id>:role/LabRole
 ```
 
-No AWS Academy Learner Lab, use a role existente `LabRole`; este repo nao cria IAM Role.
-
 ## VPC para acesso ao RDS
 
 Use os outputs do repo `../oficina-infra-db` como referencia:
@@ -163,34 +136,6 @@ No GitHub:
 
 ```text
 Actions > Deploy Lambda > Run workflow
-```
-
-O workflow:
-
-- restaura, compila e testa;
-- publica o projeto em ZIP;
-- cria ou atualiza `oficina-auth-cpf`;
-- cria ou atualiza `oficina-jwt-authorizer`;
-- configura handlers, memoria e timeout;
-- configura VPC apenas na Lambda `oficina-auth-cpf`;
-- usa `LabRole`;
-- nao usa Terraform.
-
-Handlers configurados:
-
-```text
-oficina-auth-cpf:
-Oficina.AuthLambda::Oficina.AuthLambda.Functions.AuthCpfFunction::HandleAsync
-
-oficina-jwt-authorizer:
-Oficina.AuthLambda::Oficina.AuthLambda.Functions.JwtAuthorizerFunction::HandleAsync
-```
-
-Configuracoes aplicadas:
-
-```text
-oficina-auth-cpf: 256 MB, timeout 15s, VPC config
-oficina-jwt-authorizer: 256 MB, timeout 5s, sem VPC
 ```
 
 ## Validar funcoes
@@ -294,11 +239,3 @@ Sem token, token invalido ou token expirado retorna:
   "isAuthorized": false
 }
 ```
-
-## Seguranca
-
-- Nao versionar secrets, connection string real, `.env` real ou `terraform.tfvars`.
-- Nao logar senha, JWT, connection string, `Jwt__Secret` ou CPF completo.
-- A Lambda Auth retorna erro interno generico em falhas inesperadas.
-- O Authorizer nega por padrao e trata tokens invalidos sem excecao nao tratada.
-- A API principal tambem valida o JWT internamente como segunda camada.

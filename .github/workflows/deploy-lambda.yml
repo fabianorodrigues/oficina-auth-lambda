@@ -1,0 +1,207 @@
+name: Deploy Lambda
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AUTH_FUNCTION_NAME: oficina-auth-cpf
+  AUTHORIZER_FUNCTION_NAME: oficina-jwt-authorizer
+  RUNTIME: dotnet10
+  ZIP_FILE: artifacts/oficina-auth-lambda.zip
+  AUTH_HANDLER: Oficina.AuthLambda::Oficina.AuthLambda.Functions.AuthCpfFunction::HandleAsync
+  AUTHORIZER_HANDLER: Oficina.AuthLambda::Oficina.AuthLambda.Functions.JwtAuthorizerFunction::HandleAsync
+
+jobs:
+  deploy:
+    name: Build, Test and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Oficina.AuthLambda.sln
+
+      - name: Build
+        run: dotnet build Oficina.AuthLambda.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test Oficina.AuthLambda.sln --configuration Release --no-build
+
+      - name: Publish package
+        run: |
+          dotnet publish src/Oficina.AuthLambda/Oficina.AuthLambda.csproj --configuration Release --output publish
+          mkdir -p artifacts
+          cd publish
+          zip -r "../${ZIP_FILE}" .
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Validate deployment secrets
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
+          JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
+          JWT_EXPIRATION_MINUTES: ${{ secrets.JWT_EXPIRATION_MINUTES }}
+          LAMBDA_SUBNET_IDS: ${{ secrets.LAMBDA_SUBNET_IDS }}
+          LAMBDA_SECURITY_GROUP_IDS: ${{ secrets.LAMBDA_SECURITY_GROUP_IDS }}
+        run: |
+          required=(
+            AWS_REGION
+            DB_CONNECTION_STRING
+            JWT_SECRET
+            JWT_ISSUER
+            JWT_AUDIENCE
+            JWT_EXPIRATION_MINUTES
+            LAMBDA_SUBNET_IDS
+            LAMBDA_SECURITY_GROUP_IDS
+          )
+
+          for name in "${required[@]}"; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret or env var ${name} is required."
+              exit 1
+            fi
+          done
+
+      - name: Prepara Lambda configuration files
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
+          JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
+          JWT_EXPIRATION_MINUTES: ${{ secrets.JWT_EXPIRATION_MINUTES }}
+          LAMBDA_SUBNET_IDS: ${{ secrets.LAMBDA_SUBNET_IDS }}
+          LAMBDA_SECURITY_GROUP_IDS: ${{ secrets.LAMBDA_SECURITY_GROUP_IDS }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          def split_csv(name):
+              return [value.strip() for value in os.environ[name].split(",") if value.strip()]
+
+          auth_env = {
+              "Variables": {
+                  "ConnectionStrings__SqlServer": os.environ["DB_CONNECTION_STRING"],
+                  "Jwt__Secret": os.environ["JWT_SECRET"],
+                  "Jwt__Issuer": os.environ["JWT_ISSUER"],
+                  "Jwt__Audience": os.environ["JWT_AUDIENCE"],
+                  "Jwt__ExpirationMinutes": os.environ["JWT_EXPIRATION_MINUTES"],
+              }
+          }
+
+          authorizer_env = {
+              "Variables": {
+                  "Jwt__Secret": os.environ["JWT_SECRET"],
+                  "Jwt__Issuer": os.environ["JWT_ISSUER"],
+                  "Jwt__Audience": os.environ["JWT_AUDIENCE"],
+                  "Jwt__ExpirationMinutes": os.environ["JWT_EXPIRATION_MINUTES"],
+              }
+          }
+
+          auth_vpc = {
+              "SubnetIds": split_csv("LAMBDA_SUBNET_IDS"),
+              "SecurityGroupIds": split_csv("LAMBDA_SECURITY_GROUP_IDS"),
+          }
+
+          no_vpc = {
+              "SubnetIds": [],
+              "SecurityGroupIds": [],
+          }
+
+          with open("/tmp/auth-env.json", "w", encoding="utf-8") as f:
+              json.dump(auth_env, f)
+          with open("/tmp/authorizer-env.json", "w", encoding="utf-8") as f:
+              json.dump(authorizer_env, f)
+          with open("/tmp/auth-vpc.json", "w", encoding="utf-8") as f:
+              json.dump(auth_vpc, f)
+          with open("/tmp/no-vpc.json", "w", encoding="utf-8") as f:
+              json.dump(no_vpc, f)
+          PY
+
+      - name: Resolve LabRole ARN
+        id: role
+        env:
+          AWS_LAMBDA_ROLE_ARN: ${{ secrets.AWS_LAMBDA_ROLE_ARN }}
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          role_arn="${AWS_LAMBDA_ROLE_ARN:-arn:aws:iam::${account_id}:role/LabRole}"
+          echo "role_arn=${role_arn}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy oficina-auth-cpf
+        run: |
+          if aws lambda get-function --function-name "${AUTH_FUNCTION_NAME}" >/dev/null 2>&1; then
+            aws lambda update-function-code \
+              --function-name "${AUTH_FUNCTION_NAME}" \
+              --zip-file "fileb://${ZIP_FILE}"
+            aws lambda wait function-updated --function-name "${AUTH_FUNCTION_NAME}"
+
+            aws lambda update-function-configuration \
+              --function-name "${AUTH_FUNCTION_NAME}" \
+              --runtime "${RUNTIME}" \
+              --role "${{ steps.role.outputs.role_arn }}" \
+              --handler "${AUTH_HANDLER}" \
+              --memory-size 256 \
+              --timeout 15 \
+              --environment "file:///tmp/auth-env.json" \
+              --vpc-config "file:///tmp/auth-vpc.json"
+            aws lambda wait function-updated --function-name "${AUTH_FUNCTION_NAME}"
+          else
+            aws lambda create-function \
+              --function-name "${AUTH_FUNCTION_NAME}" \
+              --runtime "${RUNTIME}" \
+              --role "${{ steps.role.outputs.role_arn }}" \
+              --handler "${AUTH_HANDLER}" \
+              --memory-size 256 \
+              --timeout 15 \
+              --zip-file "fileb://${ZIP_FILE}" \
+              --environment "file:///tmp/auth-env.json" \
+              --vpc-config "file:///tmp/auth-vpc.json"
+            aws lambda wait function-active --function-name "${AUTH_FUNCTION_NAME}"
+          fi
+
+      - name: Deploy oficina-jwt-authorizer
+        run: |
+          if aws lambda get-function --function-name "${AUTHORIZER_FUNCTION_NAME}" >/dev/null 2>&1; then
+            aws lambda update-function-code \
+              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
+              --zip-file "fileb://${ZIP_FILE}"
+            aws lambda wait function-updated --function-name "${AUTHORIZER_FUNCTION_NAME}"
+
+            aws lambda update-function-configuration \
+              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
+              --runtime "${RUNTIME}" \
+              --role "${{ steps.role.outputs.role_arn }}" \
+              --handler "${AUTHORIZER_HANDLER}" \
+              --memory-size 256 \
+              --timeout 5 \
+              --environment "file:///tmp/authorizer-env.json" \
+              --vpc-config "file:///tmp/no-vpc.json"
+            aws lambda wait function-updated --function-name "${AUTHORIZER_FUNCTION_NAME}"
+          else
+            aws lambda create-function \
+              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
+              --runtime "${RUNTIME}" \
+              --role "${{ steps.role.outputs.role_arn }}" \
+              --handler "${AUTHORIZER_HANDLER}" \
+              --memory-size 256 \
+              --timeout 5 \
+              --zip-file "fileb://${ZIP_FILE}" \
+              --environment "file:///tmp/authorizer-env.json"
+            aws lambda wait function-active --function-name "${AUTHORIZER_FUNCTION_NAME}"
+          fi
