@@ -267,7 +267,7 @@ jobs:
           read -r auth_state auth_update auth_runtime auth_handler auth_timeout auth_memory auth_subnets auth_security_groups < <(
             aws lambda get-function-configuration \
               --function-name "${AUTH_FUNCTION_NAME}" \
-              --query "[State,LastUpdateStatus,Runtime,Handler,Timeout,MemorySize,length(VpcConfig.SubnetIds),length(VpcConfig.SecurityGroupIds)]" \
+              --query '[State,LastUpdateStatus,Runtime,Handler,Timeout,MemorySize,length(VpcConfig.SubnetIds || `[]`),length(VpcConfig.SecurityGroupIds || `[]`)]' \
               --output text
           )
 
@@ -286,7 +286,7 @@ jobs:
           read -r authorizer_state authorizer_update authorizer_runtime authorizer_handler authorizer_timeout authorizer_memory authorizer_subnets authorizer_security_groups < <(
             aws lambda get-function-configuration \
               --function-name "${AUTHORIZER_FUNCTION_NAME}" \
-              --query "[State,LastUpdateStatus,Runtime,Handler,Timeout,MemorySize,length(VpcConfig.SubnetIds),length(VpcConfig.SecurityGroupIds)]" \
+              --query '[State,LastUpdateStatus,Runtime,Handler,Timeout,MemorySize,length(VpcConfig.SubnetIds || `[]`),length(VpcConfig.SecurityGroupIds || `[]`)]' \
               --output text
           )
 
