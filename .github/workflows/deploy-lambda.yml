@@ -8,13 +8,14 @@ env:
   AUTH_FUNCTION_NAME: oficina-auth-cpf
   AUTHORIZER_FUNCTION_NAME: oficina-jwt-authorizer
   RUNTIME: dotnet10
-  ZIP_FILE: artifacts/oficina-auth-lambda.zip
+  PUBLISH_DIR: ${{ runner.temp }}/oficina-auth-lambda/publish
+  ZIP_FILE: ${{ runner.temp }}/oficina-auth-lambda/oficina-auth-lambda.zip
   AUTH_HANDLER: Oficina.AuthLambda::Oficina.AuthLambda.Functions.AuthCpfFunction::HandleAsync
   AUTHORIZER_HANDLER: Oficina.AuthLambda::Oficina.AuthLambda.Functions.JwtAuthorizerFunction::HandleAsync
 
 jobs:
   deploy:
-    name: Build, Test and Deploy
+    name: Deploy
     runs-on: ubuntu-latest
 
     steps:
@@ -26,32 +27,12 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Restore
-        run: dotnet restore Oficina.AuthLambda.sln
-
-      - name: Build
-        run: dotnet build Oficina.AuthLambda.sln --configuration Release --no-restore
-
-      - name: Test
-        run: dotnet test Oficina.AuthLambda.sln --configuration Release --no-build
-
-      - name: Publish package
-        run: |
-          dotnet publish src/Oficina.AuthLambda/Oficina.AuthLambda.csproj --configuration Release --output publish
-          mkdir -p artifacts
-          cd publish
-          zip -r "../${ZIP_FILE}" .
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Validate deployment secrets
+      - name: Validate required secrets
         env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION_SECRET: ${{ secrets.AWS_REGION }}
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
@@ -62,8 +43,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          required_auth=(
-            AWS_REGION
+          required=(
+            AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY
+            AWS_SESSION_TOKEN
+            AWS_REGION_SECRET
             DB_CONNECTION_STRING
             JWT_SECRET
             JWT_ISSUER
@@ -73,27 +57,17 @@ jobs:
             LAMBDA_SECURITY_GROUP_IDS
           )
 
-          required_authorizer=(
-            AWS_REGION
-            JWT_SECRET
-            JWT_ISSUER
-            JWT_AUDIENCE
-            JWT_EXPIRATION_MINUTES
-          )
-
-          for name in "${required_auth[@]}"; do
+          for name in "${required[@]}"; do
             if [ -z "${!name}" ]; then
-              echo "::error::Secret or env var ${name} is required for ${AUTH_FUNCTION_NAME}."
+              echo "::error::Required secret ${name} is not configured."
               exit 1
             fi
           done
 
-          for name in "${required_authorizer[@]}"; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Secret or env var ${name} is required for ${AUTHORIZER_FUNCTION_NAME}."
-              exit 1
-            fi
-          done
+          if [ -z "${DB_CONNECTION_STRING}" ]; then
+            echo "::error::DB_CONNECTION_STRING is required."
+            exit 1
+          fi
 
           if [ "${DB_CONNECTION_STRING}" = "Server=" ]; then
             echo "::error::DB_CONNECTION_STRING is incomplete."
@@ -135,9 +109,47 @@ jobs:
             fi
           done
 
-          echo "DB_CONNECTION_STRING configured: yes"
-          echo "LAMBDA_SUBNET_IDS configured: yes"
-          echo "LAMBDA_SECURITY_GROUP_IDS configured: yes"
+          echo "AWS credentials configured: yes"
+          echo "AWS region configured: yes"
+          echo "DB connection string configured: yes"
+          echo "JWT configuration configured: yes"
+          echo "Lambda subnet ids configured: yes"
+          echo "Lambda security group ids configured: yes"
+
+      - name: Validate Lambda handlers
+        run: |
+          set -euo pipefail
+
+          expected_auth_handler="Oficina.AuthLambda::Oficina.AuthLambda.Functions.AuthCpfFunction::HandleAsync"
+          expected_authorizer_handler="Oficina.AuthLambda::Oficina.AuthLambda.Functions.JwtAuthorizerFunction::HandleAsync"
+
+          if [ "${AUTH_HANDLER}" != "${expected_auth_handler}" ]; then
+            echo "::error::AUTH_HANDLER does not match the project handler."
+            exit 1
+          fi
+
+          if [ "${AUTHORIZER_HANDLER}" != "${expected_authorizer_handler}" ]; then
+            echo "::error::AUTHORIZER_HANDLER does not match the project handler."
+            exit 1
+          fi
+
+          echo "Lambda handlers validated."
+
+      - name: Restore dependencies
+        run: dotnet restore Oficina.AuthLambda.sln
+
+      - name: Build solution
+        run: dotnet build Oficina.AuthLambda.sln --configuration Release --no-restore
+
+      - name: Run tests
+        run: dotnet test Oficina.AuthLambda.sln --configuration Release --no-build
+
+      - name: Publish Lambda project
+        run: |
+          mkdir -p "${PUBLISH_DIR}"
+          dotnet publish src/Oficina.AuthLambda/Oficina.AuthLambda.csproj --configuration Release --output "${PUBLISH_DIR}"
+          cd "${PUBLISH_DIR}"
+          zip -r "${ZIP_FILE}" .
 
       - name: Prepare Lambda configuration files
         env:
@@ -188,7 +200,15 @@ jobs:
               json.dump(auth_vpc, f)
           PY
 
-      - name: Resolve LabRole ARN
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Resolve AWS Lambda role
         id: role
         env:
           AWS_LAMBDA_ROLE_ARN: ${{ secrets.AWS_LAMBDA_ROLE_ARN }}
@@ -197,7 +217,7 @@ jobs:
           role_arn="${AWS_LAMBDA_ROLE_ARN:-arn:aws:iam::${account_id}:role/LabRole}"
           echo "role_arn=${role_arn}" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy oficina-auth-cpf
+      - name: Deploy Auth Lambda
         run: |
           if aws lambda get-function --function-name "${AUTH_FUNCTION_NAME}" >/dev/null 2>&1; then
             aws lambda update-function-code \
@@ -229,7 +249,7 @@ jobs:
             aws lambda wait function-active --function-name "${AUTH_FUNCTION_NAME}"
           fi
 
-      - name: Deploy oficina-jwt-authorizer
+      - name: Deploy JWT Authorizer Lambda
         run: |
           if aws lambda get-function --function-name "${AUTHORIZER_FUNCTION_NAME}" >/dev/null 2>&1; then
             aws lambda update-function-code \
@@ -260,7 +280,7 @@ jobs:
             aws lambda wait function-active --function-name "${AUTHORIZER_FUNCTION_NAME}"
           fi
 
-      - name: Validate deployed Lambda configuration
+      - name: Validate deployed Lambdas
         run: |
           set -euo pipefail
 
@@ -275,6 +295,26 @@ jobs:
 
           if [ "${auth_state}" != "Active" ] || [ "${auth_update}" != "Successful" ]; then
             echo "::error::${AUTH_FUNCTION_NAME} is not Active/Successful."
+            exit 1
+          fi
+
+          if [ "${auth_runtime}" != "${RUNTIME}" ]; then
+            echo "::error::${AUTH_FUNCTION_NAME} runtime does not match ${RUNTIME}."
+            exit 1
+          fi
+
+          if [ "${auth_handler}" != "${AUTH_HANDLER}" ]; then
+            echo "::error::${AUTH_FUNCTION_NAME} handler does not match ${AUTH_HANDLER}."
+            exit 1
+          fi
+
+          if [ "${auth_timeout}" -ne 15 ]; then
+            echo "::error::${AUTH_FUNCTION_NAME} timeout must be 15 seconds."
+            exit 1
+          fi
+
+          if [ "${auth_memory}" -ne 256 ]; then
+            echo "::error::${AUTH_FUNCTION_NAME} memory must be 256 MB."
             exit 1
           fi
 
@@ -294,6 +334,26 @@ jobs:
 
           if [ "${authorizer_state}" != "Active" ] || [ "${authorizer_update}" != "Successful" ]; then
             echo "::error::${AUTHORIZER_FUNCTION_NAME} is not Active/Successful."
+            exit 1
+          fi
+
+          if [ "${authorizer_runtime}" != "${RUNTIME}" ]; then
+            echo "::error::${AUTHORIZER_FUNCTION_NAME} runtime does not match ${RUNTIME}."
+            exit 1
+          fi
+
+          if [ "${authorizer_handler}" != "${AUTHORIZER_HANDLER}" ]; then
+            echo "::error::${AUTHORIZER_FUNCTION_NAME} handler does not match ${AUTHORIZER_HANDLER}."
+            exit 1
+          fi
+
+          if [ "${authorizer_timeout}" -ne 5 ]; then
+            echo "::error::${AUTHORIZER_FUNCTION_NAME} timeout must be 5 seconds."
+            exit 1
+          fi
+
+          if [ "${authorizer_memory}" -ne 256 ]; then
+            echo "::error::${AUTHORIZER_FUNCTION_NAME} memory must be 256 MB."
             exit 1
           fi
 
