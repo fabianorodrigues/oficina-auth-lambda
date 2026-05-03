@@ -1,255 +1,280 @@
 # oficina-auth-lambda
 
-Lambda oficial de autenticacao da Fase 3 da Oficina API.
+## Visão geral
 
-Este repositorio contem apenas o codigo serverless de autenticacao por CPF, o Lambda Authorizer JWT, testes automatizados e workflows de CI/deploy manual.
+Este repositório faz parte da Fase 3 do Tech Challenge FIAP e contém as funções serverless de autenticação da Oficina API.
 
+Ele publica duas Lambdas:
+
+- `oficina-auth-cpf`: autentica cliente, funcionário ou admin por CPF e, quando necessário, senha. Esta função consulta o RDS SQL Server e gera um JWT.
+- `oficina-jwt-authorizer`: valida o JWT recebido pelo API Gateway e autoriza ou nega o acesso às rotas protegidas.
+
+A infraestrutura do banco fica no repositório `oficina-infra-db`. A API principal fica no repositório `oficina-api`.
+
+## Responsabilidade deste repositório
+
+Este repositório contém:
+
+- código da Lambda `oficina-auth-cpf`;
+- código da Lambda `oficina-jwt-authorizer`;
+- testes automatizados;
+- workflow de CI;
+- workflow de deploy manual.
 
 ## Arquitetura
 
-Fluxo de autenticacao:
+Autenticação:
 
 ```text
 Cliente/Postman
-  -> API Gateway
-  -> POST /api/auth/cpf
-  -> Lambda oficina-auth-cpf
-  -> RDS SQL Server
-  -> JWT
+        |
+        v
+API Gateway
+        |
+        v
+oficina-auth-cpf
+        |
+        v
+RDS SQL Server
+        |
+        v
+JWT
 ```
 
-Fluxo de rotas protegidas:
+Rotas protegidas:
 
 ```text
 Cliente/Postman
-  -> API Gateway
-  -> Lambda oficina-jwt-authorizer
-  -> API Oficina
+        |
+        v
+API Gateway
+        |
+        v
+oficina-jwt-authorizer
+        |
+        v
+API Oficina
 ```
 
-`oficina-auth-cpf` fica dentro da VPC porque consulta o RDS. `oficina-jwt-authorizer` nao fica na VPC porque apenas valida JWT.
+A Lambda `oficina-auth-cpf` usa VPC porque acessa o RDS SQL Server.
 
-## Organizacao da solution
+A Lambda `oficina-jwt-authorizer` não usa VPC e não usa banco, porque apenas valida JWT.
 
-```text
-src/Oficina.AuthLambda/
-  Functions/
-  Application/
-  Domain/
-  Infrastructure/
-  Contracts/
-  Configuration/
-  Serialization/
-  DependencyInjection.cs
-```
+## Organização da solução
 
-Responsabilidades:
+| Pasta/arquivo | Responsabilidade |
+|---|---|
+| `Functions` | Entrada AWS Lambda, parse de eventos e mapeamento de responses |
+| `Application` | Orquestração dos casos de uso |
+| `Domain` | Conceitos puros como CPF, perfil e modelos de autenticação |
+| `Infrastructure` | SQL Server, JWT, PasswordHasher e relógio do sistema |
+| `Contracts` | DTOs de entrada e saída |
+| `Configuration` | Leitura e validação de variáveis de ambiente |
+| `Serialization` | Serialização JSON do runtime Lambda |
+| `DependencyInjection.cs` | Composição das dependências |
 
-- `Functions`: entrada AWS Lambda, parse de eventos, mapeamento de responses e tratamento de erros controlados.
-- `Application`: orquestracao dos casos de uso. `AuthService` autentica cliente/funcionario; `JwtAuthorizerService` valida o header Bearer e monta resposta do authorizer.
-- `Domain`: conceitos puros como CPF, perfil, modelos de autenticacao e excecoes controladas.
-- `Infrastructure`: detalhes externos como SQL Server, JWT, PasswordHasher e relogio do sistema.
-- `Contracts`: DTOs JSON de entrada/saida da Lambda Auth e do Authorizer.
-- `Configuration`: leitura e validacao de variaveis de ambiente.
-- `Serialization`: serializer JSON usado pelo runtime Lambda.
-- `DependencyInjection.cs`: cria um `ServiceProvider` unico por container Lambda e reaproveitado entre invocacoes.
+## Lambdas publicadas
 
-## Variaveis de ambiente da Lambda
-
-`oficina-auth-cpf`:
-
-```text
-ConnectionStrings__SqlServer
-Jwt__Secret
-Jwt__Issuer
-Jwt__Audience
-Jwt__ExpirationMinutes
-```
-
-`oficina-jwt-authorizer`:
-
-```text
-Jwt__Secret
-Jwt__Issuer
-Jwt__Audience
-Jwt__ExpirationMinutes
-```
-
-Exemplo de connection string, sem valores reais:
-
-```text
-Server=<rds-endpoint>,1433;Database=OficinaDb;User Id=<usuario>;Password=<senha>;Encrypt=True;TrustServerCertificate=True
-```
+| Lambda | Responsabilidade | Usa VPC? | Usa banco? |
+|---|---|---|---|
+| `oficina-auth-cpf` | Autentica CPF/senha e gera JWT | Sim | Sim |
+| `oficina-jwt-authorizer` | Valida JWT no API Gateway | Não | Não |
 
 ## GitHub Secrets
 
-Configure em `Settings > Secrets and variables > Actions`:
+Configure os secrets em:
 
 ```text
-AWS_ACCESS_KEY_ID
-AWS_SECRET_ACCESS_KEY
-AWS_SESSION_TOKEN
-AWS_REGION
-DB_CONNECTION_STRING
-JWT_SECRET
-JWT_ISSUER
-JWT_AUDIENCE
-JWT_EXPIRATION_MINUTES
-AWS_LAMBDA_ROLE_ARN
-LAMBDA_SUBNET_IDS
-LAMBDA_SECURITY_GROUP_IDS
+GitHub > Settings > Secrets and variables > Actions
 ```
 
-`AWS_LAMBDA_ROLE_ARN` e opcional. Se nao for informado, o workflow monta:
+| Secret | Uso |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | Credencial do AWS Academy |
+| `AWS_SECRET_ACCESS_KEY` | Credencial do AWS Academy |
+| `AWS_SESSION_TOKEN` | Token temporário do AWS Academy |
+| `AWS_REGION` | Região AWS, usar `us-east-1` |
+| `DB_CONNECTION_STRING` | Connection string do RDS usada pela Auth |
+| `JWT_SECRET` | Mesmo segredo usado pela API principal |
+| `JWT_ISSUER` | Mesmo issuer usado pela API principal |
+| `JWT_AUDIENCE` | Mesmo audience usado pela API principal |
+| `JWT_EXPIRATION_MINUTES` | Tempo de expiração do token |
+| `AWS_LAMBDA_ROLE_ARN` | ARN da LabRole; opcional |
+| `LAMBDA_SUBNET_IDS` | Subnets para a Lambda Auth |
+| `LAMBDA_SECURITY_GROUP_IDS` | Security Group da Lambda Auth |
+
+O secret `AWS_LAMBDA_ROLE_ARN` é opcional. Se não for informado, o workflow monta automaticamente:
 
 ```text
 arn:aws:iam::<account-id>:role/LabRole
 ```
 
-## VPC para acesso ao RDS
+Use sempre `lambda_security_group_ids` para configurar `LAMBDA_SECURITY_GROUP_IDS`. Não use o Security Group do RDS como Security Group da Lambda.
 
-Use os outputs do repo `../oficina-infra-db` como referencia:
+## Executar build/test local
 
-- `public_subnet_ids` -> secret `LAMBDA_SUBNET_IDS`, separado por virgula;
-- `db_security_group_id` -> secret `LAMBDA_SECURITY_GROUP_IDS`.
-
-Exemplo:
-
-```text
-LAMBDA_SUBNET_IDS=subnet-xxx,subnet-yyy
-LAMBDA_SECURITY_GROUP_IDS=sg-xxx
-DB_CONNECTION_STRING=Server=<db_address>,1433;Database=OficinaDb;User Id=<usuario>;Password=<senha>;Encrypt=True;TrustServerCertificate=True
-```
-
-Use sempre `lambda_security_group_ids`, nao o Security Group do RDS. O `oficina-jwt-authorizer` nao usa VPC e nao recebe `DB_CONNECTION_STRING`.
-
-## Executar localmente
+Restaurar dependências:
 
 ```powershell
 dotnet restore Oficina.AuthLambda.sln
+```
+
+Compilar:
+
+```powershell
 dotnet build Oficina.AuthLambda.sln --configuration Release
+```
+
+Executar testes:
+
+```powershell
 dotnet test Oficina.AuthLambda.sln --configuration Release
 ```
 
-O projeto usa .NET 10 e runtime Lambda `dotnet10`. Se o AWS Academy nao aceitar `dotnet10`, o fallback e alterar os projetos/workflows para `net8.0` e o deploy para `dotnet8`.
+O projeto usa .NET 10 e runtime Lambda `dotnet10`.
 
 ## Deploy manual
 
-No GitHub:
+No GitHub, execute:
 
 ```text
-Actions > Deploy Lambda > Run workflow
+GitHub Actions > Deploy Lambda > Run workflow
 ```
 
-## Validar funcoes
+O workflow `Deploy Lambda`:
+
+- roda restore, build e testes;
+- empacota o projeto;
+- cria ou atualiza `oficina-auth-cpf`;
+- cria ou atualiza `oficina-jwt-authorizer`;
+- configura VPC apenas na `oficina-auth-cpf`;
+- mantém `oficina-jwt-authorizer` sem VPC;
+
+## Validar funções criadas
+
+Validar `oficina-auth-cpf`:
 
 ```powershell
-aws lambda get-function `
-  --function-name oficina-auth-cpf `
-  --region us-east-1
-
-aws lambda get-function `
-  --function-name oficina-jwt-authorizer `
-  --region us-east-1
+aws lambda get-function-configuration --function-name oficina-auth-cpf --region us-east-1 --query "{State:State,LastUpdateStatus:LastUpdateStatus,Runtime:Runtime,Handler:Handler,Timeout:Timeout,Memory:MemorySize,VpcConfig:VpcConfig}"
 ```
 
-Resultado esperado: `Configuration.State = Active`.
+Validar `oficina-jwt-authorizer`:
 
-## Invoke da Lambda Auth
+```powershell
+aws lambda get-function-configuration --function-name oficina-jwt-authorizer --region us-east-1 --query "{State:State,LastUpdateStatus:LastUpdateStatus,Runtime:Runtime,Handler:Handler,Timeout:Timeout,Memory:MemorySize,VpcConfig:VpcConfig}"
+```
 
-Criar payload de cliente com evento HTTP API v2:
+Resultado esperado:
+
+| Lambda | Estado esperado |
+|---|---|
+| `oficina-auth-cpf` | `State=Active`, `LastUpdateStatus=Successful`, VPC preenchida |
+| `oficina-jwt-authorizer` | `State=Active`, `LastUpdateStatus=Successful`, sem VPC |
+
+## Testar Lambda Auth
+
+Crie o payload HTTP API v2 para cliente:
 
 ```powershell
 @{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"39053344705"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-cliente.json
 ```
 
-Invocar Auth:
+Invocar a Lambda Auth:
 
 ```powershell
 aws lambda invoke --function-name oficina-auth-cpf --payload file://payload-cliente.json --cli-binary-format raw-in-base64-out --region us-east-1 response-cliente.json
 ```
 
-Ler response:
+Ler a resposta:
 
 ```powershell
 Get-Content response-cliente.json -Raw
 ```
 
-Extrair token:
+Extrair o token:
 
 ```powershell
-$token = ((Get-Content response-cliente.json -Raw | ConvertFrom-Json).body | ConvertFrom-Json).accessToken
+$token = ((Get-Content response-cliente.json -Raw | ConvertFrom-Json).body | ConvertFrom-Json).accessToken; $token
 ```
 
-Para funcionario/admin, crie o payload com senha:
+Troque `39053344705` por um CPF existente na tabela `Clientes.Documento`.
+
+Se a resposta tiver `statusCode=200`, a Lambda Auth conseguiu consultar o RDS e gerar o JWT.
+
+## Testar Funcionário/Admin
+
+Crie o payload HTTP API v2 com CPF e senha:
 
 ```powershell
 @{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"39053344705","senha":"Senha@123"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-funcionario.json
 ```
 
-## Invoke do Authorizer
+Invocar a Lambda Auth:
 
-Criar payload do Authorizer:
+```powershell
+aws lambda invoke --function-name oficina-auth-cpf --payload file://payload-funcionario.json --cli-binary-format raw-in-base64-out --region us-east-1 response-funcionario.json
+```
+
+Ler a resposta:
+
+```powershell
+Get-Content response-funcionario.json -Raw
+```
+
+Troque `39053344705` e `Senha@123` por credenciais de teste cadastradas na tabela de funcionários.
+
+## Testar Authorizer
+
+Crie o payload com token válido:
 
 ```powershell
 @{version='2.0';headers=@{authorization="Bearer $token"}} | ConvertTo-Json -Compress | Set-Content payload-authorizer.json
 ```
 
-Invocar Authorizer:
+Invocar o Authorizer:
 
 ```powershell
 aws lambda invoke --function-name oficina-jwt-authorizer --payload file://payload-authorizer.json --cli-binary-format raw-in-base64-out --region us-east-1 response-authorizer.json
 ```
 
-Ler response:
+Ler a resposta:
 
 ```powershell
 Get-Content response-authorizer.json -Raw
 ```
 
-Resposta autorizada esperada:
+Resultado esperado:
 
 ```json
 {
-  "isAuthorized": true,
-  "context": {
-    "cpf": "...",
-    "role": "Cliente",
-    "clienteId": "..."
-  }
+  "isAuthorized": true
 }
 ```
 
-Sem token, token invalido ou token expirado retorna:
+## Testar token inválido
 
-```json
-{
-  "isAuthorized": false
-}
-```
-
-Testar token invalido:
+Crie o payload com token inválido:
 
 ```powershell
 @{version='2.0';headers=@{authorization='Bearer token-invalido'}} | ConvertTo-Json -Compress | Set-Content payload-authorizer-invalido.json
 ```
 
+Invocar o Authorizer:
+
 ```powershell
 aws lambda invoke --function-name oficina-jwt-authorizer --payload file://payload-authorizer-invalido.json --cli-binary-format raw-in-base64-out --region us-east-1 response-authorizer-invalido.json
 ```
+
+Ler a resposta:
 
 ```powershell
 Get-Content response-authorizer-invalido.json -Raw
 ```
 
-Ver logs da Auth:
+Resultado esperado:
 
-```powershell
-aws logs tail /aws/lambda/oficina-auth-cpf --since 15m --follow --region us-east-1
-```
-
-Ver logs do Authorizer:
-
-```powershell
-aws logs tail /aws/lambda/oficina-jwt-authorizer --since 15m --follow --region us-east-1
+```json
+{
+  "isAuthorized": false
+}
 ```
