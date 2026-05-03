@@ -116,9 +116,12 @@ Use os outputs do repo `../oficina-infra-db` como referencia:
 Exemplo:
 
 ```text
-LAMBDA_SUBNET_IDS=subnet-abc,subnet-def
-LAMBDA_SECURITY_GROUP_IDS=sg-abc
+LAMBDA_SUBNET_IDS=subnet-xxx,subnet-yyy
+LAMBDA_SECURITY_GROUP_IDS=sg-xxx
+DB_CONNECTION_STRING=Server=<db_address>,1433;Database=OficinaDb;User Id=<usuario>;Password=<senha>;Encrypt=True;TrustServerCertificate=True
 ```
+
+Use sempre `lambda_security_group_ids`, nao o Security Group do RDS. O `oficina-jwt-authorizer` nao usa VPC e nao recebe `DB_CONNECTION_STRING`.
 
 ## Executar localmente
 
@@ -154,69 +157,54 @@ Resultado esperado: `Configuration.State = Active`.
 
 ## Invoke da Lambda Auth
 
-Crie `payload-cliente.json` com evento HTTP API v2:
-
-```json
-{
-  "version": "2.0",
-  "headers": {
-    "content-type": "application/json"
-  },
-  "body": "{\"cpf\":\"39053344705\"}",
-  "isBase64Encoded": false
-}
-```
-
-Invoke:
+Criar payload de cliente com evento HTTP API v2:
 
 ```powershell
-aws lambda invoke `
-  --function-name oficina-auth-cpf `
-  --payload file://payload-cliente.json `
-  --cli-binary-format raw-in-base64-out `
-  --region us-east-1 `
-  response-cliente.json
-
-Get-Content response-cliente.json
+@{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"39053344705"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-cliente.json
 ```
 
-Para funcionario/admin, use body com senha:
+Invocar Auth:
 
-```json
-{
-  "version": "2.0",
-  "headers": {
-    "content-type": "application/json"
-  },
-  "body": "{\"cpf\":\"39053344705\",\"senha\":\"Senha@123\"}",
-  "isBase64Encoded": false
-}
+```powershell
+aws lambda invoke --function-name oficina-auth-cpf --payload file://payload-cliente.json --cli-binary-format raw-in-base64-out --region us-east-1 response-cliente.json
+```
+
+Ler response:
+
+```powershell
+Get-Content response-cliente.json -Raw
+```
+
+Extrair token:
+
+```powershell
+$token = ((Get-Content response-cliente.json -Raw | ConvertFrom-Json).body | ConvertFrom-Json).accessToken
+```
+
+Para funcionario/admin, crie o payload com senha:
+
+```powershell
+@{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"39053344705","senha":"Senha@123"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-funcionario.json
 ```
 
 ## Invoke do Authorizer
 
-Crie `payload-authorizer.json`:
-
-```json
-{
-  "version": "2.0",
-  "headers": {
-    "authorization": "Bearer <accessToken>"
-  }
-}
-```
-
-Invoke:
+Criar payload do Authorizer:
 
 ```powershell
-aws lambda invoke `
-  --function-name oficina-jwt-authorizer `
-  --payload file://payload-authorizer.json `
-  --cli-binary-format raw-in-base64-out `
-  --region us-east-1 `
-  response-authorizer.json
+@{version='2.0';headers=@{authorization="Bearer $token"}} | ConvertTo-Json -Compress | Set-Content payload-authorizer.json
+```
 
-Get-Content response-authorizer.json
+Invocar Authorizer:
+
+```powershell
+aws lambda invoke --function-name oficina-jwt-authorizer --payload file://payload-authorizer.json --cli-binary-format raw-in-base64-out --region us-east-1 response-authorizer.json
+```
+
+Ler response:
+
+```powershell
+Get-Content response-authorizer.json -Raw
 ```
 
 Resposta autorizada esperada:
@@ -238,4 +226,30 @@ Sem token, token invalido ou token expirado retorna:
 {
   "isAuthorized": false
 }
+```
+
+Testar token invalido:
+
+```powershell
+@{version='2.0';headers=@{authorization='Bearer token-invalido'}} | ConvertTo-Json -Compress | Set-Content payload-authorizer-invalido.json
+```
+
+```powershell
+aws lambda invoke --function-name oficina-jwt-authorizer --payload file://payload-authorizer-invalido.json --cli-binary-format raw-in-base64-out --region us-east-1 response-authorizer-invalido.json
+```
+
+```powershell
+Get-Content response-authorizer-invalido.json -Raw
+```
+
+Ver logs da Auth:
+
+```powershell
+aws logs tail /aws/lambda/oficina-auth-cpf --since 15m --follow --region us-east-1
+```
+
+Ver logs do Authorizer:
+
+```powershell
+aws logs tail /aws/lambda/oficina-jwt-authorizer --since 15m --follow --region us-east-1
 ```

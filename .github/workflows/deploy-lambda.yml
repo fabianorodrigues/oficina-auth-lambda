@@ -60,7 +60,9 @@ jobs:
           LAMBDA_SUBNET_IDS: ${{ secrets.LAMBDA_SUBNET_IDS }}
           LAMBDA_SECURITY_GROUP_IDS: ${{ secrets.LAMBDA_SECURITY_GROUP_IDS }}
         run: |
-          required=(
+          set -euo pipefail
+
+          required_auth=(
             AWS_REGION
             DB_CONNECTION_STRING
             JWT_SECRET
@@ -71,14 +73,73 @@ jobs:
             LAMBDA_SECURITY_GROUP_IDS
           )
 
-          for name in "${required[@]}"; do
+          required_authorizer=(
+            AWS_REGION
+            JWT_SECRET
+            JWT_ISSUER
+            JWT_AUDIENCE
+            JWT_EXPIRATION_MINUTES
+          )
+
+          for name in "${required_auth[@]}"; do
             if [ -z "${!name}" ]; then
-              echo "::error::Secret or env var ${name} is required."
+              echo "::error::Secret or env var ${name} is required for ${AUTH_FUNCTION_NAME}."
               exit 1
             fi
           done
 
-      - name: Prepara Lambda configuration files
+          for name in "${required_authorizer[@]}"; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret or env var ${name} is required for ${AUTHORIZER_FUNCTION_NAME}."
+              exit 1
+            fi
+          done
+
+          if [ "${DB_CONNECTION_STRING}" = "Server=" ]; then
+            echo "::error::DB_CONNECTION_STRING is incomplete."
+            exit 1
+          fi
+
+          for token in "Server=" "Database=" "User Id=" "Password="; do
+            if [[ "${DB_CONNECTION_STRING}" != *"${token}"* ]]; then
+              echo "::error::DB_CONNECTION_STRING is missing a required segment."
+              exit 1
+            fi
+          done
+
+          IFS=',' read -ra subnets <<< "${LAMBDA_SUBNET_IDS}"
+          if [ "${#subnets[@]}" -eq 0 ]; then
+            echo "::error::LAMBDA_SUBNET_IDS must contain at least one subnet."
+            exit 1
+          fi
+
+          for subnet in "${subnets[@]}"; do
+            subnet="$(echo "${subnet}" | xargs)"
+            if [[ "${subnet}" != subnet-* ]]; then
+              echo "::error::LAMBDA_SUBNET_IDS must contain only subnet ids."
+              exit 1
+            fi
+          done
+
+          IFS=',' read -ra security_groups <<< "${LAMBDA_SECURITY_GROUP_IDS}"
+          if [ "${#security_groups[@]}" -eq 0 ]; then
+            echo "::error::LAMBDA_SECURITY_GROUP_IDS must contain at least one security group."
+            exit 1
+          fi
+
+          for security_group in "${security_groups[@]}"; do
+            security_group="$(echo "${security_group}" | xargs)"
+            if [[ "${security_group}" != sg-* ]]; then
+              echo "::error::LAMBDA_SECURITY_GROUP_IDS must contain only security group ids."
+              exit 1
+            fi
+          done
+
+          echo "DB_CONNECTION_STRING configured: yes"
+          echo "LAMBDA_SUBNET_IDS configured: yes"
+          echo "LAMBDA_SECURITY_GROUP_IDS configured: yes"
+
+      - name: Prepare Lambda configuration files
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
@@ -119,19 +180,12 @@ jobs:
               "SecurityGroupIds": split_csv("LAMBDA_SECURITY_GROUP_IDS"),
           }
 
-          no_vpc = {
-              "SubnetIds": [],
-              "SecurityGroupIds": [],
-          }
-
           with open("/tmp/auth-env.json", "w", encoding="utf-8") as f:
               json.dump(auth_env, f)
           with open("/tmp/authorizer-env.json", "w", encoding="utf-8") as f:
               json.dump(authorizer_env, f)
           with open("/tmp/auth-vpc.json", "w", encoding="utf-8") as f:
               json.dump(auth_vpc, f)
-          with open("/tmp/no-vpc.json", "w", encoding="utf-8") as f:
-              json.dump(no_vpc, f)
           PY
 
       - name: Resolve LabRole ARN
@@ -191,7 +245,7 @@ jobs:
               --memory-size 256 \
               --timeout 5 \
               --environment "file:///tmp/authorizer-env.json" \
-              --vpc-config "file:///tmp/no-vpc.json"
+              --vpc-config "SubnetIds=[],SecurityGroupIds=[]"
             aws lambda wait function-updated --function-name "${AUTHORIZER_FUNCTION_NAME}"
           else
             aws lambda create-function \
@@ -204,4 +258,46 @@ jobs:
               --zip-file "fileb://${ZIP_FILE}" \
               --environment "file:///tmp/authorizer-env.json"
             aws lambda wait function-active --function-name "${AUTHORIZER_FUNCTION_NAME}"
+          fi
+
+      - name: Validate deployed Lambda configuration
+        run: |
+          set -euo pipefail
+
+          read -r auth_state auth_update auth_runtime auth_handler auth_timeout auth_memory auth_subnets auth_security_groups < <(
+            aws lambda get-function-configuration \
+              --function-name "${AUTH_FUNCTION_NAME}" \
+              --query "[State,LastUpdateStatus,Runtime,Handler,Timeout,MemorySize,length(VpcConfig.SubnetIds),length(VpcConfig.SecurityGroupIds)]" \
+              --output text
+          )
+
+          echo "${AUTH_FUNCTION_NAME}: state=${auth_state}, lastUpdate=${auth_update}, runtime=${auth_runtime}, handler=${auth_handler}, timeout=${auth_timeout}, memory=${auth_memory}, subnetCount=${auth_subnets}, securityGroupCount=${auth_security_groups}"
+
+          if [ "${auth_state}" != "Active" ] || [ "${auth_update}" != "Successful" ]; then
+            echo "::error::${AUTH_FUNCTION_NAME} is not Active/Successful."
+            exit 1
+          fi
+
+          if [ "${auth_subnets}" -eq 0 ] || [ "${auth_security_groups}" -eq 0 ]; then
+            echo "::error::${AUTH_FUNCTION_NAME} must have VpcConfig with subnets and security groups."
+            exit 1
+          fi
+
+          read -r authorizer_state authorizer_update authorizer_runtime authorizer_handler authorizer_timeout authorizer_memory authorizer_subnets authorizer_security_groups < <(
+            aws lambda get-function-configuration \
+              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
+              --query "[State,LastUpdateStatus,Runtime,Handler,Timeout,MemorySize,length(VpcConfig.SubnetIds),length(VpcConfig.SecurityGroupIds)]" \
+              --output text
+          )
+
+          echo "${AUTHORIZER_FUNCTION_NAME}: state=${authorizer_state}, lastUpdate=${authorizer_update}, runtime=${authorizer_runtime}, handler=${authorizer_handler}, timeout=${authorizer_timeout}, memory=${authorizer_memory}, subnetCount=${authorizer_subnets}, securityGroupCount=${authorizer_security_groups}"
+
+          if [ "${authorizer_state}" != "Active" ] || [ "${authorizer_update}" != "Successful" ]; then
+            echo "::error::${AUTHORIZER_FUNCTION_NAME} is not Active/Successful."
+            exit 1
+          fi
+
+          if [ "${authorizer_subnets}" -ne 0 ] || [ "${authorizer_security_groups}" -ne 0 ]; then
+            echo "::error::${AUTHORIZER_FUNCTION_NAME} must not have VpcConfig."
+            exit 1
           fi
