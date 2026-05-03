@@ -26,3 +26,7 @@ Thumbs.db
 .DS_Store
 *.tmp
 *.temp
+/payload-authorizer.json
+/payload-cliente.json
+/response-authorizer.json
+/response-cliente.json

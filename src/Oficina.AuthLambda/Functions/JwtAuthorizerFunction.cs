@@ -9,7 +9,7 @@ public sealed class JwtAuthorizerFunction
     private readonly JwtAuthorizerService _authorizer;
 
     public JwtAuthorizerFunction()
-        : this(DependencyInjection.GetRequiredService<JwtAuthorizerService>())
+        : this(DependencyInjection.GetRequiredAuthorizerService<JwtAuthorizerService>())
     {
     }
 

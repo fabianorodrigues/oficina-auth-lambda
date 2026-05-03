@@ -16,7 +16,7 @@ public sealed class AuthCpfFunction
     private readonly AuthService _authService;
 
     public AuthCpfFunction()
-        : this(DependencyInjection.GetRequiredService<AuthService>())
+        : this(DependencyInjection.GetRequiredAuthService<AuthService>())
     {
     }
 

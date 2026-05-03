@@ -10,14 +10,20 @@ namespace Oficina.AuthLambda;
 
 public static class DependencyInjection
 {
-    private static readonly Lazy<ServiceProvider> Provider = new(BuildServiceProvider);
+    private static readonly Lazy<ServiceProvider> AuthProvider = new(BuildAuthServiceProvider);
+    private static readonly Lazy<ServiceProvider> AuthorizerProvider = new(BuildAuthorizerServiceProvider);
 
-    public static IServiceProvider ServiceProvider => Provider.Value;
+    public static IServiceProvider AuthServiceProvider => AuthProvider.Value;
 
-    public static T GetRequiredService<T>() where T : notnull
-        => ServiceProvider.GetRequiredService<T>();
+    public static IServiceProvider JwtAuthorizerServiceProvider => AuthorizerProvider.Value;
 
-    private static ServiceProvider BuildServiceProvider()
+    public static T GetRequiredAuthService<T>() where T : notnull
+        => AuthServiceProvider.GetRequiredService<T>();
+
+    public static T GetRequiredAuthorizerService<T>() where T : notnull
+        => JwtAuthorizerServiceProvider.GetRequiredService<T>();
+
+    public static ServiceProvider BuildAuthServiceProvider()
     {
         var services = new ServiceCollection();
 
@@ -32,6 +38,18 @@ public static class DependencyInjection
         services.AddTransient<IClienteRepository, ClienteRepository>();
         services.AddTransient<IFuncionarioRepository, FuncionarioRepository>();
         services.AddTransient<AuthService>();
+
+        return services.BuildServiceProvider(validateScopes: true);
+    }
+
+    public static ServiceProvider BuildAuthorizerServiceProvider()
+    {
+        var services = new ServiceCollection();
+
+        services.AddSingleton(JwtOptions.FromEnvironment().Validate());
+        services.AddSingleton<IClock, SystemClock>();
+
+        services.AddSingleton<IJwtTokenService, JwtTokenService>();
         services.AddTransient<JwtAuthorizerService>();
 
         return services.BuildServiceProvider(validateScopes: true);
