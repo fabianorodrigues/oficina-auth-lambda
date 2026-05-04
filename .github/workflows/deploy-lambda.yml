@@ -5,8 +5,8 @@ on:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
-  AUTH_FUNCTION_NAME: oficina-auth-cpf
-  AUTHORIZER_FUNCTION_NAME: oficina-jwt-authorizer
+  AUTH_FUNCTION_NAME: ${{ vars.AUTH_FUNCTION_NAME || 'oficina-auth-cpf' }}
+  AUTHORIZER_FUNCTION_NAME: ${{ vars.AUTHORIZER_FUNCTION_NAME || 'oficina-jwt-authorizer' }}
   RUNTIME: dotnet10
   PUBLISH_DIR: ${{ runner.temp }}/oficina-auth-lambda/publish
   ZIP_FILE: ${{ runner.temp }}/oficina-auth-lambda/oficina-auth-lambda.zip
@@ -71,6 +71,16 @@ jobs:
 
           if [ "${DB_CONNECTION_STRING}" = "Server=" ]; then
             echo "::error::DB_CONNECTION_STRING is incomplete."
+            exit 1
+          fi
+
+          if [[ ! "${AUTH_FUNCTION_NAME}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+            echo "::error::AUTH_FUNCTION_NAME variable must be a valid Lambda function name."
+            exit 1
+          fi
+
+          if [[ ! "${AUTHORIZER_FUNCTION_NAME}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+            echo "::error::AUTHORIZER_FUNCTION_NAME variable must be a valid Lambda function name."
             exit 1
           fi
 
