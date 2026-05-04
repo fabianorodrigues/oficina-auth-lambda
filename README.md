@@ -103,6 +103,16 @@ GitHub > Settings > Secrets and variables > Actions
 | `LAMBDA_SUBNET_IDS` | Subnets para a Lambda Auth |
 | `LAMBDA_SECURITY_GROUP_IDS` | Security Group da Lambda Auth |
 
+## GitHub Variables
+
+Configure apenas se precisar publicar as funções com nomes diferentes dos padrões:
+
+| Variável | Uso | Padrão |
+|---|---|---|
+| `AUTH_FUNCTION_NAME` | Nome da Lambda que autentica CPF/senha | `oficina-auth-cpf` |
+| `AUTHORIZER_FUNCTION_NAME` | Nome da Lambda Authorizer JWT | `oficina-jwt-authorizer` |
+
+
 O secret `AWS_LAMBDA_ROLE_ARN` é opcional. Se não for informado, o workflow monta automaticamente:
 
 ```text
@@ -176,7 +186,7 @@ Resultado esperado:
 Crie o payload HTTP API v2 para cliente:
 
 ```powershell
-@{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"39053344705"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-cliente.json
+@{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"<cpf-cliente>"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-cliente.json
 ```
 
 Invocar a Lambda Auth:
@@ -197,7 +207,7 @@ Extrair o token:
 $token = ((Get-Content response-cliente.json -Raw | ConvertFrom-Json).body | ConvertFrom-Json).accessToken; $token
 ```
 
-Troque `39053344705` por um CPF existente na tabela `Clientes.Documento`.
+Troque `<cpf-cliente>` por um CPF cadastrado na tabela `Clientes.Documento`.
 
 Se a resposta tiver `statusCode=200`, a Lambda Auth conseguiu consultar o RDS e gerar o JWT.
 
@@ -206,7 +216,7 @@ Se a resposta tiver `statusCode=200`, a Lambda Auth conseguiu consultar o RDS e 
 Crie o payload HTTP API v2 com CPF e senha:
 
 ```powershell
-@{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"39053344705","senha":"Senha@123"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-funcionario.json
+@{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"<cpf-funcionario>","senha":"<senha>"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-funcionario.json
 ```
 
 Invocar a Lambda Auth:
@@ -221,7 +231,7 @@ Ler a resposta:
 Get-Content response-funcionario.json -Raw
 ```
 
-Troque `39053344705` e `Senha@123` por credenciais de teste cadastradas na tabela de funcionários.
+Troque `<cpf-funcionario>` e `<senha>` por credenciais de teste cadastradas na tabela de funcionários.
 
 ## Testar Authorizer
 
