@@ -33,6 +33,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION_SECRET: ${{ secrets.AWS_REGION }}
+          AWS_LAMBDA_ROLE_ARN: ${{ secrets.AWS_LAMBDA_ROLE_ARN }}
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
@@ -46,8 +47,8 @@ jobs:
           required=(
             AWS_ACCESS_KEY_ID
             AWS_SECRET_ACCESS_KEY
-            AWS_SESSION_TOKEN
             AWS_REGION_SECRET
+            AWS_LAMBDA_ROLE_ARN
             DB_CONNECTION_STRING
             JWT_SECRET
             JWT_ISSUER
@@ -81,6 +82,11 @@ jobs:
 
           if [[ ! "${AUTHORIZER_FUNCTION_NAME}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
             echo "::error::AUTHORIZER_FUNCTION_NAME variable must be a valid Lambda function name."
+            exit 1
+          fi
+
+          if [[ ! "${AWS_LAMBDA_ROLE_ARN}" =~ ^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/.+$ ]]; then
+            echo "::error::AWS_LAMBDA_ROLE_ARN must be a valid IAM Role ARN."
             exit 1
           fi
 
@@ -224,7 +230,13 @@ jobs:
           AWS_LAMBDA_ROLE_ARN: ${{ secrets.AWS_LAMBDA_ROLE_ARN }}
         run: |
           account_id="$(aws sts get-caller-identity --query Account --output text)"
-          role_arn="${AWS_LAMBDA_ROLE_ARN:-arn:aws:iam::${account_id}:role/LabRole}"
+          role_arn="${AWS_LAMBDA_ROLE_ARN}"
+
+          if [[ ! "${role_arn}" =~ ^arn:aws[a-zA-Z-]*:iam::${account_id}:role/.+$ ]]; then
+            echo "::error::AWS_LAMBDA_ROLE_ARN must belong to the authenticated AWS account."
+            exit 1
+          fi
+
           echo "role_arn=${role_arn}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy Auth Lambda
