@@ -2,67 +2,49 @@
 
 ## Visão geral
 
-Este repositório contém as funções serverless de autenticação da Oficina API. Ele é a **etapa 4** da implantação, depois que o RDS existe e as migrations da API já criaram as tabelas.
+Este repositório contém as funções serverless de autenticação da solução Oficina API. Ele é implantado depois que o banco existe e as migrations da API já criaram as tabelas necessárias.
 
 São publicadas duas Lambdas:
 
 - `oficina-auth-cpf`: autentica cliente, funcionário ou admin por CPF e, quando necessário, senha. Esta função acessa o RDS SQL Server e gera JWT.
-- `oficina-jwt-authorizer`: valida JWT para o API Gateway sem acessar banco de dados.
+- `oficina-jwt-authorizer`: valida JWT para integração futura com API Gateway, sem acessar o banco de dados.
 
-## Ordem de implantação da solução
+## Arquitetura e ordem de implantação
 
-1. `oficina-infra-db`
-2. `oficina-infra-k8s`
-3. `oficina-api`
-4. **`oficina-auth-lambda`**
-5. `oficina-infra-k8s` novamente para API Gateway, quando essa etapa estiver implementada
+1. `oficina-infra-db`: cria VPC, subnets, security groups e RDS.
+2. `oficina-infra-k8s`: cria ECR, EKS e node group.
+3. `oficina-api`: publica a imagem no ECR, executa migrations e sobe no EKS.
+4. **`oficina-auth-lambda`**: publica as Lambdas de autenticação e autorização.
+5. `oficina-infra-k8s`: etapa futura para API Gateway.
 
-## Responsabilidade
+## Responsabilidade deste repositório
 
-Este repositório é responsável por:
+- Manter a Lambda de autenticação por CPF.
+- Manter a Lambda Authorizer JWT.
+- Executar build e testes.
+- Publicar ou atualizar as Lambdas na AWS.
+- Configurar VPC somente na Lambda `oficina-auth-cpf`.
+- Usar a mesma configuração JWT do `oficina-api`.
 
-- manter o código da Lambda Auth CPF;
-- manter o código da Lambda JWT Authorizer;
-- executar build e testes;
-- publicar ou atualizar as Lambdas;
-- configurar VPC apenas na Lambda Auth CPF;
-- configurar JWT nas duas Lambdas.
+## Integração com os outros repositórios
 
-## Pré-requisitos
+Este repositório consome a conexão do banco criada pelo `oficina-infra-db` e a mesma configuração JWT usada pelo `oficina-api`. Ele não gera outputs Terraform.
 
-- `oficina-infra-db` aplicado com outputs disponíveis.
-- `oficina-api` executada em modo migration ao menos uma vez.
-- Conta AWS com permissão para Lambda, IAM pass role, VPC config e CloudWatch Logs.
-- IAM Role para execução das Lambdas criada pelo usuário.
-- .NET SDK 10.
-- AWS CLI para validação.
+### Valores consumidos
 
-## Configuração necessária
+| Valor | Origem | Uso |
+|---|---|---|
+| `DB_CONNECTION_STRING` | Outputs `db_address`, `db_port` e `db_name` do `oficina-infra-db`, mais usuário e senha do banco | Conectar a Lambda Auth ao SQL Server |
+| `LAMBDA_SUBNET_IDS` | Output `lambda_subnet_ids` do `oficina-infra-db` | Informar em CSV, exemplo `subnet-abc,subnet-def` |
+| `LAMBDA_SECURITY_GROUP_IDS` | Output `lambda_security_group_ids` do `oficina-infra-db` | Informar em CSV, exemplo `sg-abc,sg-def` |
+| `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_EXPIRATION_MINUTES` | Mesmos valores configurados no `oficina-api` | Emitir e validar tokens compatíveis com a API |
 
-Configure os valores em `GitHub > Settings > Secrets and variables > Actions`.
+### Valores gerados
 
-| Nome | Tipo | Origem | Onde configurar | Uso |
-|---|---|---|---|---|
-| `AWS_ACCESS_KEY_ID` | Secret | Credencial AWS do usuário | GitHub Secrets deste repo | Autenticar na AWS |
-| `AWS_SECRET_ACCESS_KEY` | Secret | Credencial AWS do usuário | GitHub Secrets deste repo | Autenticar na AWS |
-| `AWS_SESSION_TOKEN` | Secret | Credencial temporária, se aplicável | GitHub Secrets deste repo | Autenticar com sessão temporária |
-| `AWS_REGION` | Secret | Região escolhida, por exemplo `us-east-1` | GitHub Secrets deste repo | Publicar e validar Lambdas |
-| `AWS_LAMBDA_ROLE_ARN` | Secret | ARN criado pelo usuário | GitHub Secrets deste repo | Role de execução das Lambdas |
-| `DB_CONNECTION_STRING` | Secret | Montada com outputs do `oficina-infra-db` | GitHub Secrets deste repo | Conexão da Lambda Auth com SQL Server |
-| `LAMBDA_SUBNET_IDS` | Secret | Output `lambda_subnet_ids` do `oficina-infra-db` | GitHub Secrets deste repo | Subnets da Lambda Auth |
-| `LAMBDA_SECURITY_GROUP_IDS` | Secret | Output `lambda_security_group_ids` do `oficina-infra-db` | GitHub Secrets deste repo | Security groups da Lambda Auth |
-| `JWT_SECRET` | Secret | Mesmo valor do `oficina-api` | GitHub Secrets deste repo | Assinar e validar JWT |
-| `JWT_ISSUER` | Secret | Mesmo valor do `oficina-api` | GitHub Secrets deste repo | Issuer JWT |
-| `JWT_AUDIENCE` | Secret | Mesmo valor do `oficina-api` | GitHub Secrets deste repo | Audience JWT |
-| `JWT_EXPIRATION_MINUTES` | Secret | Mesmo valor do `oficina-api` | GitHub Secrets deste repo | Expiração dos tokens |
-| `AUTH_FUNCTION_NAME` | Variable opcional | Valor definido pelo usuário | GitHub Variables deste repo | Nome da Lambda Auth; padrão `oficina-auth-cpf` |
-| `AUTHORIZER_FUNCTION_NAME` | Variable opcional | Valor definido pelo usuário | GitHub Variables deste repo | Nome da Authorizer; padrão `oficina-jwt-authorizer` |
-
-Exemplo de ARN da role:
-
-```text
-arn:aws:iam::<account-id>:role/<lambda-role>
-```
+| Valor | Usado por | Uso |
+|---|---|---|
+| `oficina-auth-cpf` | `oficina-infra-k8s`, na etapa futura de API Gateway | Nome ou ARN da Lambda Auth |
+| `oficina-jwt-authorizer` | `oficina-infra-k8s`, na etapa futura de API Gateway | Nome ou ARN da Lambda Authorizer |
 
 Modelo de `DB_CONNECTION_STRING`:
 
@@ -70,38 +52,52 @@ Modelo de `DB_CONNECTION_STRING`:
 Server=<db_address>,<db_port>;Database=<db_name>;User Id=<db-user>;Password=<db-password>;Encrypt=True;TrustServerCertificate=True;
 ```
 
-Use sempre `lambda_security_group_ids` para `LAMBDA_SECURITY_GROUP_IDS`. Não use o security group do RDS como security group da Lambda.
+Use sempre `lambda_security_group_ids` em `LAMBDA_SECURITY_GROUP_IDS`. Não use o security group do RDS como security group da Lambda.
+
+## Configuração necessária
+
+Configure os valores em `GitHub > Settings > Secrets and variables > Actions`.
+
+| Nome | Tipo | Uso |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID` | Secret | Autenticar na AWS |
+| `AWS_SECRET_ACCESS_KEY` | Secret | Autenticar na AWS |
+| `AWS_SESSION_TOKEN` | Secret opcional | Autenticar com credencial temporária |
+| `AWS_REGION` | Secret | Região AWS, exemplo `us-east-1` |
+| `AWS_LAMBDA_ROLE_ARN` | Secret | Role de execução das Lambdas |
+| `DB_CONNECTION_STRING` | Secret | Conexão da Lambda Auth com SQL Server |
+| `LAMBDA_SUBNET_IDS` | Secret | Subnets da Lambda Auth em CSV |
+| `LAMBDA_SECURITY_GROUP_IDS` | Secret | Security groups da Lambda Auth em CSV |
+| `JWT_SECRET` | Secret | Assinar e validar JWT |
+| `JWT_ISSUER` | Secret | Issuer JWT |
+| `JWT_AUDIENCE` | Secret | Audience JWT |
+| `JWT_EXPIRATION_MINUTES` | Secret | Expiração dos tokens |
+| `AUTH_FUNCTION_NAME` | Variable opcional | Nome da Lambda Auth; padrão `oficina-auth-cpf` |
+| `AUTHORIZER_FUNCTION_NAME` | Variable opcional | Nome da Authorizer; padrão `oficina-jwt-authorizer` |
+
+Exemplo de ARN da role:
+
+```text
+arn:aws:iam::<account-id>:role/<lambda-role>
+```
+
+O `JWT_SECRET` deve ser o mesmo usado pelo `oficina-api`. Para gerar um valor forte no PowerShell:
+
+```powershell
+-join ((48..57) + (65..90) + (97..122) | Get-Random -Count 64 | ForEach-Object {[char]$_})
+```
 
 ## Como executar
 
-### CI
+Em Pull Requests, o workflow `Lambda CI` executa restore, build e testes.
 
-O workflow `Lambda CI` roda em Pull Request e valida:
-
-- restore;
-- build Release;
-- testes.
-
-### Deploy manual
-
-Execute manualmente:
+Após o merge na `main`, execute manualmente:
 
 ```text
 GitHub Actions > Deploy Lambda > Run workflow
 ```
 
-O workflow `Deploy Lambda`:
-
-- valida secrets obrigatórios;
-- valida nomes e handlers das Lambdas;
-- executa restore, build e testes;
-- empacota o projeto;
-- cria ou atualiza `oficina-auth-cpf`;
-- cria ou atualiza `oficina-jwt-authorizer`;
-- configura VPC somente na `oficina-auth-cpf`;
-- mantém `oficina-jwt-authorizer` sem VPC.
-
-### Build e testes locais
+Para build e testes locais:
 
 ```powershell
 dotnet restore Oficina.AuthLambda.sln
@@ -111,64 +107,39 @@ dotnet test Oficina.AuthLambda.sln --configuration Release --no-build
 
 ## Como validar
 
-Valide a Lambda Auth:
+Valide a configuração das Lambdas:
 
 ```powershell
 aws lambda get-function-configuration --function-name oficina-auth-cpf --region <region>
-```
-
-Valide a Authorizer:
-
-```powershell
 aws lambda get-function-configuration --function-name oficina-jwt-authorizer --region <region>
 ```
 
 Resultado esperado:
 
-- `oficina-auth-cpf`: `State=Active`, `LastUpdateStatus=Successful`, VPC preenchida;
-- `oficina-jwt-authorizer`: `State=Active`, `LastUpdateStatus=Successful`, sem VPC.
+- `oficina-auth-cpf`: `State=Active`, `LastUpdateStatus=Successful` e VPC preenchida;
+- `oficina-jwt-authorizer`: `State=Active`, `LastUpdateStatus=Successful` e sem VPC.
 
-Payload HTTP API v2 para autenticar cliente:
+Valide a autenticação com payload HTTP API v2:
 
 ```powershell
 @{version='2.0';headers=@{'content-type'='application/json'};body='{"cpf":"<cpf-cliente>"}';isBase64Encoded=$false} | ConvertTo-Json -Compress | Set-Content payload-cliente.json
-```
-
-Invocar a Lambda Auth:
-
-```powershell
 aws lambda invoke --function-name oficina-auth-cpf --payload file://payload-cliente.json --cli-binary-format raw-in-base64-out --region <region> response-cliente.json
 ```
 
-Payload para Authorizer com token válido:
+Para validar a Authorizer, envie um token válido:
 
 ```powershell
 @{version='2.0';headers=@{authorization="Bearer <jwt-valido>"}} | ConvertTo-Json -Compress | Set-Content payload-authorizer.json
-```
-
-Invocar a Authorizer:
-
-```powershell
 aws lambda invoke --function-name oficina-jwt-authorizer --payload file://payload-authorizer.json --cli-binary-format raw-in-base64-out --region <region> response-authorizer.json
 ```
 
-Resposta esperada para token válido:
+Resposta esperada:
 
 ```json
 {
   "isAuthorized": true
 }
 ```
-
-## Outputs para a próxima etapa
-
-Este repositório não gera outputs Terraform. Após publicar as Lambdas, use os nomes abaixo na etapa futura de API Gateway no `oficina-infra-k8s`.
-
-| Valor | Usado por | Configurar como |
-|---|---|---|
-| `oficina-auth-cpf` | `oficina-infra-k8s` | Nome ou ARN da Lambda Auth |
-| `oficina-jwt-authorizer` | `oficina-infra-k8s` | Nome ou ARN da Lambda Authorizer |
-| Configuração JWT | `oficina-api` e API Gateway | Deve permanecer compatível entre API e Lambdas |
 
 ## Problemas comuns
 
