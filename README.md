@@ -81,7 +81,7 @@ Exemplo de ARN da role:
 arn:aws:iam::<account-id>:role/<lambda-role>
 ```
 
-O `JWT_SECRET` deve ser o mesmo usado pelo `oficina-api`. Para gerar um valor forte no PowerShell:
+O `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` e `JWT_EXPIRATION_MINUTES` devem ser exatamente os mesmos usados pelo `oficina-api`. O `JWT_SECRET` deve ter pelo menos 32 caracteres. Para gerar um valor forte no PowerShell:
 
 ```powershell
 -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 64 | ForEach-Object {[char]$_})
