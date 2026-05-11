@@ -3,51 +3,66 @@ name: Deploy Lambda
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUNTIME: dotnet10
+  ARTIFACT_NAME: oficina-auth-lambda-package
   AUTH_FUNCTION_NAME: ${{ vars.AUTH_FUNCTION_NAME || 'oficina-auth-cpf' }}
   AUTHORIZER_FUNCTION_NAME: ${{ vars.AUTHORIZER_FUNCTION_NAME || 'oficina-jwt-authorizer' }}
-  RUNTIME: dotnet10
-  PUBLISH_DIR: ${{ runner.temp }}/oficina-auth-lambda/publish
-  ZIP_FILE: ${{ runner.temp }}/oficina-auth-lambda/oficina-auth-lambda.zip
   AUTH_HANDLER: Oficina.AuthLambda::Oficina.AuthLambda.Functions.AuthCpfFunction::HandleAsync
   AUTHORIZER_HANDLER: Oficina.AuthLambda::Oficina.AuthLambda.Functions.JwtAuthorizerFunction::HandleAsync
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  deploy:
-    name: Deploy
+  validate:
+    name: Validate configuration
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_LAMBDA_ROLE_ARN: ${{ secrets.AWS_LAMBDA_ROLE_ARN }}
+      DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
+      JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
+      JWT_EXPIRATION_MINUTES: ${{ secrets.JWT_EXPIRATION_MINUTES }}
+      LAMBDA_SUBNET_IDS: ${{ secrets.LAMBDA_SUBNET_IDS }}
+      LAMBDA_SECURITY_GROUP_IDS: ${{ secrets.LAMBDA_SECURITY_GROUP_IDS }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-
-      - name: Validate required secrets
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-          AWS_REGION_SECRET: ${{ secrets.AWS_REGION }}
-          AWS_LAMBDA_ROLE_ARN: ${{ secrets.AWS_LAMBDA_ROLE_ARN }}
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
-          JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
-          JWT_EXPIRATION_MINUTES: ${{ secrets.JWT_EXPIRATION_MINUTES }}
-          LAMBDA_SUBNET_IDS: ${{ secrets.LAMBDA_SUBNET_IDS }}
-          LAMBDA_SECURITY_GROUP_IDS: ${{ secrets.LAMBDA_SECURITY_GROUP_IDS }}
+      - name: Validate manual deploy branch
+        shell: bash
         run: |
           set -euo pipefail
 
-          required=(
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Deploy Lambda must be run manually from refs/heads/main. Current ref: ${GITHUB_REF}."
+            exit 1
+          fi
+
+      - name: Validate required configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          is_blank() {
+            local value="${1:-}"
+            [ -z "${value//[[:space:]]/}" ]
+          }
+
+          required_vars=(
             AWS_ACCESS_KEY_ID
             AWS_SECRET_ACCESS_KEY
-            AWS_REGION_SECRET
+            AWS_REGION
             AWS_LAMBDA_ROLE_ARN
             DB_CONNECTION_STRING
             JWT_SECRET
@@ -58,20 +73,15 @@ jobs:
             LAMBDA_SECURITY_GROUP_IDS
           )
 
-          for name in "${required[@]}"; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Required secret ${name} is not configured."
-              exit 1
+          missing=0
+          for var_name in "${required_vars[@]}"; do
+            if is_blank "${!var_name:-}"; then
+              echo "::error::${var_name} is required."
+              missing=1
             fi
           done
 
-          if [ -z "${DB_CONNECTION_STRING}" ]; then
-            echo "::error::DB_CONNECTION_STRING is required."
-            exit 1
-          fi
-
-          if [ "${DB_CONNECTION_STRING}" = "Server=" ]; then
-            echo "::error::DB_CONNECTION_STRING is incomplete."
+          if [ "${missing}" -ne 0 ]; then
             exit 1
           fi
 
@@ -82,6 +92,11 @@ jobs:
 
           if [[ ! "${AUTHORIZER_FUNCTION_NAME}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
             echo "::error::AUTHORIZER_FUNCTION_NAME variable must be a valid Lambda function name."
+            exit 1
+          fi
+
+          if [ "${AUTH_FUNCTION_NAME}" = "${AUTHORIZER_FUNCTION_NAME}" ]; then
+            echo "::error::AUTH_FUNCTION_NAME and AUTHORIZER_FUNCTION_NAME must be different."
             exit 1
           fi
 
@@ -97,44 +112,49 @@ jobs:
             fi
           done
 
-          IFS=',' read -ra subnets <<< "${LAMBDA_SUBNET_IDS}"
-          if [ "${#subnets[@]}" -eq 0 ]; then
-            echo "::error::LAMBDA_SUBNET_IDS must contain at least one subnet."
+          if [ "${#JWT_SECRET}" -lt 32 ]; then
+            echo "::error::JWT_SECRET must be at least 32 characters."
             exit 1
           fi
 
-          for subnet in "${subnets[@]}"; do
-            subnet="$(echo "${subnet}" | xargs)"
-            if [[ "${subnet}" != subnet-* ]]; then
-              echo "::error::LAMBDA_SUBNET_IDS must contain only subnet ids."
-              exit 1
-            fi
-          done
-
-          IFS=',' read -ra security_groups <<< "${LAMBDA_SECURITY_GROUP_IDS}"
-          if [ "${#security_groups[@]}" -eq 0 ]; then
-            echo "::error::LAMBDA_SECURITY_GROUP_IDS must contain at least one security group."
+          if [[ ! "${JWT_EXPIRATION_MINUTES}" =~ ^[0-9]+$ ]]; then
+            echo "::error::JWT_EXPIRATION_MINUTES must be a positive integer."
             exit 1
           fi
 
-          for security_group in "${security_groups[@]}"; do
-            security_group="$(echo "${security_group}" | xargs)"
-            if [[ "${security_group}" != sg-* ]]; then
-              echo "::error::LAMBDA_SECURITY_GROUP_IDS must contain only security group ids."
+          if [ "${JWT_EXPIRATION_MINUTES}" -le 0 ]; then
+            echo "::error::JWT_EXPIRATION_MINUTES must be a positive integer."
+            exit 1
+          fi
+
+          validate_csv_ids() {
+            local var_name="$1"
+            local prefix="$2"
+            local raw="${!var_name}"
+            local values=()
+
+            IFS=',' read -ra values <<< "${raw}"
+            if [ "${#values[@]}" -eq 0 ]; then
+              echo "::error::${var_name} must contain at least one ${prefix} id."
               exit 1
             fi
-          done
 
-          echo "AWS credentials configured: yes"
-          echo "AWS region configured: yes"
-          echo "DB connection string configured: yes"
-          echo "JWT configuration configured: yes"
-          echo "Lambda subnet ids configured: yes"
-          echo "Lambda security group ids configured: yes"
+            for raw_item in "${values[@]}"; do
+              item="$(printf '%s' "${raw_item}" | xargs)"
+              if [ -z "${item}" ]; then
+                echo "::error::${var_name} must not contain empty CSV entries."
+                exit 1
+              fi
 
-      - name: Validate Lambda handlers
-        run: |
-          set -euo pipefail
+              if [[ ! "${item}" =~ ^${prefix}-[A-Za-z0-9]+$ ]]; then
+                echo "::error::${var_name} must contain only ${prefix} ids."
+                exit 1
+              fi
+            done
+          }
+
+          validate_csv_ids LAMBDA_SUBNET_IDS subnet
+          validate_csv_ids LAMBDA_SECURITY_GROUP_IDS sg
 
           expected_auth_handler="Oficina.AuthLambda::Oficina.AuthLambda.Functions.AuthCpfFunction::HandleAsync"
           expected_authorizer_handler="Oficina.AuthLambda::Oficina.AuthLambda.Functions.JwtAuthorizerFunction::HandleAsync"
@@ -149,34 +169,117 @@ jobs:
             exit 1
           fi
 
-          echo "Lambda handlers validated."
+          echo "Required configuration validated."
 
-      - name: Restore dependencies
+  build-and-test:
+    name: Build, test, and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: validate
+
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      PUBLISH_DIR: ${{ runner.temp }}/oficina-auth-lambda/publish
+      ZIP_PATH: ${{ runner.temp }}/oficina-auth-lambda/oficina-auth-lambda.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore
         run: dotnet restore Oficina.AuthLambda.sln
 
       - name: Build solution
         run: dotnet build Oficina.AuthLambda.sln --configuration Release --no-restore
 
-      - name: Run tests
+      - name: Test
         run: dotnet test Oficina.AuthLambda.sln --configuration Release --no-build
 
       - name: Publish Lambda project
+        shell: bash
         run: |
+          set -euo pipefail
+
+          rm -rf "${PUBLISH_DIR}" "${ZIP_PATH}"
           mkdir -p "${PUBLISH_DIR}"
-          dotnet publish src/Oficina.AuthLambda/Oficina.AuthLambda.csproj --configuration Release --output "${PUBLISH_DIR}"
-          cd "${PUBLISH_DIR}"
-          zip -r "${ZIP_FILE}" .
+
+          dotnet publish src/Oficina.AuthLambda/Oficina.AuthLambda.csproj \
+            --configuration Release \
+            --no-restore \
+            --no-build \
+            --output "${PUBLISH_DIR}"
+
+          (cd "${PUBLISH_DIR}" && zip -r "${ZIP_PATH}" .)
+
+          if [ ! -s "${ZIP_PATH}" ]; then
+            echo "::error::Lambda package zip was not created."
+            exit 1
+          fi
+
+      - name: Upload Lambda package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ZIP_PATH }}
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy-lambda:
+    name: Deploy Lambda
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - validate
+      - build-and-test
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_LAMBDA_ROLE_ARN: ${{ secrets.AWS_LAMBDA_ROLE_ARN }}
+      DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
+      JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
+      JWT_EXPIRATION_MINUTES: ${{ secrets.JWT_EXPIRATION_MINUTES }}
+      LAMBDA_SUBNET_IDS: ${{ secrets.LAMBDA_SUBNET_IDS }}
+      LAMBDA_SECURITY_GROUP_IDS: ${{ secrets.LAMBDA_SECURITY_GROUP_IDS }}
+      PACKAGE_DIR: ${{ runner.temp }}/lambda-package
+      ZIP_PATH: ${{ runner.temp }}/lambda-package/oficina-auth-lambda.zip
+
+    steps:
+      - name: Download Lambda package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.PACKAGE_DIR }}
+
+      - name: Validate package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -s "${ZIP_PATH}" ]; then
+            echo "::error::Lambda package artifact was not downloaded correctly."
+            exit 1
+          fi
 
       - name: Prepare Lambda configuration files
+        shell: bash
         env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          JWT_ISSUER: ${{ secrets.JWT_ISSUER }}
-          JWT_AUDIENCE: ${{ secrets.JWT_AUDIENCE }}
-          JWT_EXPIRATION_MINUTES: ${{ secrets.JWT_EXPIRATION_MINUTES }}
-          LAMBDA_SUBNET_IDS: ${{ secrets.LAMBDA_SUBNET_IDS }}
-          LAMBDA_SECURITY_GROUP_IDS: ${{ secrets.LAMBDA_SECURITY_GROUP_IDS }}
+          AUTH_ENV_FILE: ${{ runner.temp }}/auth-env.json
+          AUTHORIZER_ENV_FILE: ${{ runner.temp }}/authorizer-env.json
+          AUTH_VPC_FILE: ${{ runner.temp }}/auth-vpc.json
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import json
           import os
@@ -208,178 +311,265 @@ jobs:
               "SecurityGroupIds": split_csv("LAMBDA_SECURITY_GROUP_IDS"),
           }
 
-          with open("/tmp/auth-env.json", "w", encoding="utf-8") as f:
-              json.dump(auth_env, f)
-          with open("/tmp/authorizer-env.json", "w", encoding="utf-8") as f:
-              json.dump(authorizer_env, f)
-          with open("/tmp/auth-vpc.json", "w", encoding="utf-8") as f:
-              json.dump(auth_vpc, f)
+          with open(os.environ["AUTH_ENV_FILE"], "w", encoding="utf-8") as file:
+              json.dump(auth_env, file)
+          with open(os.environ["AUTHORIZER_ENV_FILE"], "w", encoding="utf-8") as file:
+              json.dump(authorizer_env, file)
+          with open(os.environ["AUTH_VPC_FILE"], "w", encoding="utf-8") as file:
+              json.dump(auth_vpc, file)
           PY
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Configure AWS credentials with session token
+        if: ${{ env.AWS_SESSION_TOKEN != '' }}
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials
+        if: ${{ env.AWS_SESSION_TOKEN == '' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Resolve AWS Lambda role
         id: role
-        env:
-          AWS_LAMBDA_ROLE_ARN: ${{ secrets.AWS_LAMBDA_ROLE_ARN }}
+        shell: bash
         run: |
-          account_id="$(aws sts get-caller-identity --query Account --output text)"
-          role_arn="${AWS_LAMBDA_ROLE_ARN}"
+          set -euo pipefail
 
-          if [[ ! "${role_arn}" =~ ^arn:aws[a-zA-Z-]*:iam::${account_id}:role/.+$ ]]; then
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+
+          if [[ ! "${AWS_LAMBDA_ROLE_ARN}" =~ ^arn:aws[a-zA-Z-]*:iam::${account_id}:role/.+$ ]]; then
             echo "::error::AWS_LAMBDA_ROLE_ARN must belong to the authenticated AWS account."
             exit 1
           fi
 
-          echo "role_arn=${role_arn}" >> "$GITHUB_OUTPUT"
+          echo "role_arn=${AWS_LAMBDA_ROLE_ARN}" >> "${GITHUB_OUTPUT}"
 
       - name: Deploy Auth Lambda
+        shell: bash
+        env:
+          AUTH_ENV_FILE: ${{ runner.temp }}/auth-env.json
+          AUTH_VPC_FILE: ${{ runner.temp }}/auth-vpc.json
+          ROLE_ARN: ${{ steps.role.outputs.role_arn }}
         run: |
+          set -euo pipefail
+
+          fail_runtime() {
+            echo "::error::AWS rejected runtime ${RUNTIME} for ${AUTH_FUNCTION_NAME}. Confirm the selected region/account supports this Lambda runtime."
+            exit 1
+          }
+
           if aws lambda get-function --function-name "${AUTH_FUNCTION_NAME}" >/dev/null 2>&1; then
             aws lambda update-function-code \
               --function-name "${AUTH_FUNCTION_NAME}" \
-              --zip-file "fileb://${ZIP_FILE}"
+              --zip-file "fileb://${ZIP_PATH}" >/dev/null
             aws lambda wait function-updated --function-name "${AUTH_FUNCTION_NAME}"
 
-            aws lambda update-function-configuration \
+            if ! aws lambda update-function-configuration \
               --function-name "${AUTH_FUNCTION_NAME}" \
               --runtime "${RUNTIME}" \
-              --role "${{ steps.role.outputs.role_arn }}" \
+              --role "${ROLE_ARN}" \
               --handler "${AUTH_HANDLER}" \
               --memory-size 256 \
               --timeout 15 \
-              --environment "file:///tmp/auth-env.json" \
-              --vpc-config "file:///tmp/auth-vpc.json"
+              --environment "file://${AUTH_ENV_FILE}" \
+              --vpc-config "file://${AUTH_VPC_FILE}" >/tmp/auth-config.json 2>/tmp/auth-config-error.log; then
+              if grep -qi "runtime" /tmp/auth-config-error.log; then
+                fail_runtime
+              fi
+              echo "::error::Failed to update ${AUTH_FUNCTION_NAME} configuration."
+              exit 1
+            fi
             aws lambda wait function-updated --function-name "${AUTH_FUNCTION_NAME}"
           else
-            aws lambda create-function \
+            if ! aws lambda create-function \
               --function-name "${AUTH_FUNCTION_NAME}" \
               --runtime "${RUNTIME}" \
-              --role "${{ steps.role.outputs.role_arn }}" \
+              --role "${ROLE_ARN}" \
               --handler "${AUTH_HANDLER}" \
               --memory-size 256 \
               --timeout 15 \
-              --zip-file "fileb://${ZIP_FILE}" \
-              --environment "file:///tmp/auth-env.json" \
-              --vpc-config "file:///tmp/auth-vpc.json"
+              --zip-file "fileb://${ZIP_PATH}" \
+              --environment "file://${AUTH_ENV_FILE}" \
+              --vpc-config "file://${AUTH_VPC_FILE}" >/tmp/auth-create.json 2>/tmp/auth-create-error.log; then
+              if grep -qi "runtime" /tmp/auth-create-error.log; then
+                fail_runtime
+              fi
+              echo "::error::Failed to create ${AUTH_FUNCTION_NAME}."
+              exit 1
+            fi
             aws lambda wait function-active --function-name "${AUTH_FUNCTION_NAME}"
           fi
 
       - name: Deploy JWT Authorizer Lambda
-        run: |
-          if aws lambda get-function --function-name "${AUTHORIZER_FUNCTION_NAME}" >/dev/null 2>&1; then
-            aws lambda update-function-code \
-              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
-              --zip-file "fileb://${ZIP_FILE}"
-            aws lambda wait function-updated --function-name "${AUTHORIZER_FUNCTION_NAME}"
-
-            aws lambda update-function-configuration \
-              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
-              --runtime "${RUNTIME}" \
-              --role "${{ steps.role.outputs.role_arn }}" \
-              --handler "${AUTHORIZER_HANDLER}" \
-              --memory-size 256 \
-              --timeout 5 \
-              --environment "file:///tmp/authorizer-env.json" \
-              --vpc-config "SubnetIds=[],SecurityGroupIds=[]"
-            aws lambda wait function-updated --function-name "${AUTHORIZER_FUNCTION_NAME}"
-          else
-            aws lambda create-function \
-              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
-              --runtime "${RUNTIME}" \
-              --role "${{ steps.role.outputs.role_arn }}" \
-              --handler "${AUTHORIZER_HANDLER}" \
-              --memory-size 256 \
-              --timeout 5 \
-              --zip-file "fileb://${ZIP_FILE}" \
-              --environment "file:///tmp/authorizer-env.json"
-            aws lambda wait function-active --function-name "${AUTHORIZER_FUNCTION_NAME}"
-          fi
-
-      - name: Validate deployed Lambdas
+        shell: bash
+        env:
+          AUTHORIZER_ENV_FILE: ${{ runner.temp }}/authorizer-env.json
+          ROLE_ARN: ${{ steps.role.outputs.role_arn }}
         run: |
           set -euo pipefail
 
-          read -r auth_state auth_update auth_runtime auth_handler auth_timeout auth_memory auth_subnets auth_security_groups < <(
-            aws lambda get-function-configuration \
-              --function-name "${AUTH_FUNCTION_NAME}" \
-              --query '[State,LastUpdateStatus,Runtime,Handler,Timeout,MemorySize,length(VpcConfig.SubnetIds || `[]`),length(VpcConfig.SecurityGroupIds || `[]`)]' \
-              --output text
-          )
-
-          echo "${AUTH_FUNCTION_NAME}: state=${auth_state}, lastUpdate=${auth_update}, runtime=${auth_runtime}, handler=${auth_handler}, timeout=${auth_timeout}, memory=${auth_memory}, subnetCount=${auth_subnets}, securityGroupCount=${auth_security_groups}"
-
-          if [ "${auth_state}" != "Active" ] || [ "${auth_update}" != "Successful" ]; then
-            echo "::error::${AUTH_FUNCTION_NAME} is not Active/Successful."
+          fail_runtime() {
+            echo "::error::AWS rejected runtime ${RUNTIME} for ${AUTHORIZER_FUNCTION_NAME}. Confirm the selected region/account supports this Lambda runtime."
             exit 1
-          fi
+          }
 
-          if [ "${auth_runtime}" != "${RUNTIME}" ]; then
-            echo "::error::${AUTH_FUNCTION_NAME} runtime does not match ${RUNTIME}."
-            exit 1
-          fi
-
-          if [ "${auth_handler}" != "${AUTH_HANDLER}" ]; then
-            echo "::error::${AUTH_FUNCTION_NAME} handler does not match ${AUTH_HANDLER}."
-            exit 1
-          fi
-
-          if [ "${auth_timeout}" -ne 15 ]; then
-            echo "::error::${AUTH_FUNCTION_NAME} timeout must be 15 seconds."
-            exit 1
-          fi
-
-          if [ "${auth_memory}" -ne 256 ]; then
-            echo "::error::${AUTH_FUNCTION_NAME} memory must be 256 MB."
-            exit 1
-          fi
-
-          if [ "${auth_subnets}" -eq 0 ] || [ "${auth_security_groups}" -eq 0 ]; then
-            echo "::error::${AUTH_FUNCTION_NAME} must have VpcConfig with subnets and security groups."
-            exit 1
-          fi
-
-          read -r authorizer_state authorizer_update authorizer_runtime authorizer_handler authorizer_timeout authorizer_memory authorizer_subnets authorizer_security_groups < <(
-            aws lambda get-function-configuration \
+          if aws lambda get-function --function-name "${AUTHORIZER_FUNCTION_NAME}" >/dev/null 2>&1; then
+            aws lambda update-function-code \
               --function-name "${AUTHORIZER_FUNCTION_NAME}" \
-              --query '[State,LastUpdateStatus,Runtime,Handler,Timeout,MemorySize,length(VpcConfig.SubnetIds || `[]`),length(VpcConfig.SecurityGroupIds || `[]`)]' \
-              --output text
+              --zip-file "fileb://${ZIP_PATH}" >/dev/null
+            aws lambda wait function-updated --function-name "${AUTHORIZER_FUNCTION_NAME}"
+
+            if ! aws lambda update-function-configuration \
+              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
+              --runtime "${RUNTIME}" \
+              --role "${ROLE_ARN}" \
+              --handler "${AUTHORIZER_HANDLER}" \
+              --memory-size 256 \
+              --timeout 5 \
+              --environment "file://${AUTHORIZER_ENV_FILE}" \
+              --vpc-config "SubnetIds=[],SecurityGroupIds=[]" >/tmp/authorizer-config.json 2>/tmp/authorizer-config-error.log; then
+              if grep -qi "runtime" /tmp/authorizer-config-error.log; then
+                fail_runtime
+              fi
+              echo "::error::Failed to update ${AUTHORIZER_FUNCTION_NAME} configuration."
+              exit 1
+            fi
+            aws lambda wait function-updated --function-name "${AUTHORIZER_FUNCTION_NAME}"
+          else
+            if ! aws lambda create-function \
+              --function-name "${AUTHORIZER_FUNCTION_NAME}" \
+              --runtime "${RUNTIME}" \
+              --role "${ROLE_ARN}" \
+              --handler "${AUTHORIZER_HANDLER}" \
+              --memory-size 256 \
+              --timeout 5 \
+              --zip-file "fileb://${ZIP_PATH}" \
+              --environment "file://${AUTHORIZER_ENV_FILE}" >/tmp/authorizer-create.json 2>/tmp/authorizer-create-error.log; then
+              if grep -qi "runtime" /tmp/authorizer-create-error.log; then
+                fail_runtime
+              fi
+              echo "::error::Failed to create ${AUTHORIZER_FUNCTION_NAME}."
+              exit 1
+            fi
+            aws lambda wait function-active --function-name "${AUTHORIZER_FUNCTION_NAME}"
+          fi
+
+  validate-deploy:
+    name: Validate deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - deploy-lambda
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+
+    steps:
+      - name: Configure AWS credentials with session token
+        if: ${{ env.AWS_SESSION_TOKEN != '' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials
+        if: ${{ env.AWS_SESSION_TOKEN == '' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate deployed Lambdas
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws lambda get-function-configuration \
+            --function-name "${AUTH_FUNCTION_NAME}" \
+            --output json > /tmp/auth-config.json
+
+          aws lambda get-function-configuration \
+            --function-name "${AUTHORIZER_FUNCTION_NAME}" \
+            --output json > /tmp/authorizer-config.json
+
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          def fail(message):
+              print(f"::error::{message}")
+              sys.exit(1)
+
+          def load(path):
+              with open(path, "r", encoding="utf-8") as file:
+                  return json.load(file)
+
+          def validate_common(config, expected_name, expected_handler, expected_timeout):
+              if config.get("State") != "Active" or config.get("LastUpdateStatus") != "Successful":
+                  fail(f"{expected_name} is not Active/Successful.")
+              if config.get("Runtime") != os.environ["RUNTIME"]:
+                  fail(f"{expected_name} runtime does not match {os.environ['RUNTIME']}.")
+              if config.get("Handler") != expected_handler:
+                  fail(f"{expected_name} handler does not match the expected handler.")
+              if config.get("Timeout") != expected_timeout:
+                  fail(f"{expected_name} timeout must be {expected_timeout} seconds.")
+              if config.get("MemorySize") != 256:
+                  fail(f"{expected_name} memory must be 256 MB.")
+
+          auth_name = os.environ["AUTH_FUNCTION_NAME"]
+          authorizer_name = os.environ["AUTHORIZER_FUNCTION_NAME"]
+          auth_config = load("/tmp/auth-config.json")
+          authorizer_config = load("/tmp/authorizer-config.json")
+
+          validate_common(auth_config, auth_name, os.environ["AUTH_HANDLER"], 15)
+          validate_common(authorizer_config, authorizer_name, os.environ["AUTHORIZER_HANDLER"], 5)
+
+          auth_vpc = auth_config.get("VpcConfig") or {}
+          auth_subnets = auth_vpc.get("SubnetIds") or []
+          auth_security_groups = auth_vpc.get("SecurityGroupIds") or []
+          auth_env = (auth_config.get("Environment") or {}).get("Variables") or {}
+
+          if not auth_subnets or not auth_security_groups:
+              fail(f"{auth_name} must have VpcConfig with subnets and security groups.")
+          if "ConnectionStrings__SqlServer" not in auth_env:
+              fail(f"{auth_name} must receive ConnectionStrings__SqlServer.")
+
+          authorizer_vpc = authorizer_config.get("VpcConfig") or {}
+          authorizer_subnets = authorizer_vpc.get("SubnetIds") or []
+          authorizer_security_groups = authorizer_vpc.get("SecurityGroupIds") or []
+          authorizer_env = (authorizer_config.get("Environment") or {}).get("Variables") or {}
+
+          if authorizer_subnets or authorizer_security_groups:
+              fail(f"{authorizer_name} must not have VpcConfig.")
+          if "ConnectionStrings__SqlServer" in authorizer_env:
+              fail(f"{authorizer_name} must not receive ConnectionStrings__SqlServer.")
+
+          print(
+              f"{auth_name}: state={auth_config.get('State')}, "
+              f"lastUpdate={auth_config.get('LastUpdateStatus')}, "
+              f"runtime={auth_config.get('Runtime')}, "
+              f"subnetCount={len(auth_subnets)}, "
+              f"securityGroupCount={len(auth_security_groups)}"
           )
-
-          echo "${AUTHORIZER_FUNCTION_NAME}: state=${authorizer_state}, lastUpdate=${authorizer_update}, runtime=${authorizer_runtime}, handler=${authorizer_handler}, timeout=${authorizer_timeout}, memory=${authorizer_memory}, subnetCount=${authorizer_subnets}, securityGroupCount=${authorizer_security_groups}"
-
-          if [ "${authorizer_state}" != "Active" ] || [ "${authorizer_update}" != "Successful" ]; then
-            echo "::error::${AUTHORIZER_FUNCTION_NAME} is not Active/Successful."
-            exit 1
-          fi
-
-          if [ "${authorizer_runtime}" != "${RUNTIME}" ]; then
-            echo "::error::${AUTHORIZER_FUNCTION_NAME} runtime does not match ${RUNTIME}."
-            exit 1
-          fi
-
-          if [ "${authorizer_handler}" != "${AUTHORIZER_HANDLER}" ]; then
-            echo "::error::${AUTHORIZER_FUNCTION_NAME} handler does not match ${AUTHORIZER_HANDLER}."
-            exit 1
-          fi
-
-          if [ "${authorizer_timeout}" -ne 5 ]; then
-            echo "::error::${AUTHORIZER_FUNCTION_NAME} timeout must be 5 seconds."
-            exit 1
-          fi
-
-          if [ "${authorizer_memory}" -ne 256 ]; then
-            echo "::error::${AUTHORIZER_FUNCTION_NAME} memory must be 256 MB."
-            exit 1
-          fi
-
-          if [ "${authorizer_subnets}" -ne 0 ] || [ "${authorizer_security_groups}" -ne 0 ]; then
-            echo "::error::${AUTHORIZER_FUNCTION_NAME} must not have VpcConfig."
-            exit 1
-          fi
+          print(
+              f"{authorizer_name}: state={authorizer_config.get('State')}, "
+              f"lastUpdate={authorizer_config.get('LastUpdateStatus')}, "
+              f"runtime={authorizer_config.get('Runtime')}, "
+              f"subnetCount={len(authorizer_subnets)}, "
+              f"securityGroupCount={len(authorizer_security_groups)}"
+          )
+          PY
