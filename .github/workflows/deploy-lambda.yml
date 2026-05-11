@@ -106,12 +106,72 @@ jobs:
             exit 1
           fi
 
-          for token in "Server=" "Database=" "User Id=" "Password="; do
-            if [[ "${DB_CONNECTION_STRING}" != *"${token}"* ]]; then
-              echo "::error::DB_CONNECTION_STRING is missing a required segment."
+          trim_value() {
+            local value="${1:-}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            printf '%s' "${value}"
+          }
+
+          normalize_connection_key() {
+            local key
+            key="$(trim_value "${1:-}")"
+            key="${key,,}"
+            key="${key//[[:space:]]/}"
+            printf '%s' "${key}"
+          }
+
+          validate_db_connection_string() {
+            local raw="${1:-}"
+            local has_host=0
+            local has_database=0
+            local has_user=0
+            local has_password=0
+            local segment key value normalized_key
+            local segments=()
+
+            IFS=';' read -ra segments <<< "${raw}"
+            for segment in "${segments[@]}"; do
+              if is_blank "${segment}"; then
+                continue
+              fi
+
+              if [[ "${segment}" != *"="* ]]; then
+                echo "::error::DB_CONNECTION_STRING has an invalid segment."
+                exit 1
+              fi
+
+              key="$(trim_value "${segment%%=*}")"
+              value="$(trim_value "${segment#*=}")"
+              if is_blank "${key}" || is_blank "${value}"; then
+                echo "::error::DB_CONNECTION_STRING has an invalid segment."
+                exit 1
+              fi
+
+              normalized_key="$(normalize_connection_key "${key}")"
+              case "${normalized_key}" in
+                server|datasource|address|addr|networkaddress)
+                  has_host=1
+                  ;;
+                database|initialcatalog)
+                  has_database=1
+                  ;;
+                userid|uid)
+                  has_user=1
+                  ;;
+                password|pwd)
+                  has_password=1
+                  ;;
+              esac
+            done
+
+            if [ "${has_host}" -ne 1 ] || [ "${has_database}" -ne 1 ] || [ "${has_user}" -ne 1 ] || [ "${has_password}" -ne 1 ]; then
+              echo "::error::DB_CONNECTION_STRING is missing a required SQL Server connection segment."
               exit 1
             fi
-          done
+          }
+
+          validate_db_connection_string "${DB_CONNECTION_STRING}"
 
           if [ "${#JWT_SECRET}" -lt 32 ]; then
             echo "::error::JWT_SECRET must be at least 32 characters."
