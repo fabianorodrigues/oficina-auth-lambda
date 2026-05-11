@@ -89,9 +89,9 @@ O `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` e `JWT_EXPIRATION_MINUTES` devem se
 
 ## Como executar
 
-Em Pull Requests, o workflow `Lambda CI` executa restore, build e testes.
+Em Pull Requests e push na `main`, o workflow `Lambda CI` executa restore, build e testes.
 
-Após o merge na `main`, execute manualmente:
+Após o merge na `main`, execute o deploy manualmente:
 
 ```text
 GitHub Actions > Deploy Lambda > Run workflow
