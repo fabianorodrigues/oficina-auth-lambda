@@ -47,4 +47,18 @@ public class JwtAuthorizerFunctionTests
         Assert.True(response.IsAuthorized);
         Assert.Equal(clienteId.ToString(), response.Context!.ClienteId);
     }
+
+    [Fact]
+    public void AuthorizationComCasingMisto_DeveAutorizar()
+    {
+        var clienteId = Guid.NewGuid();
+        var function = new JwtAuthorizerFunction(new JwtAuthorizerService(
+            FakeJwtTokenService.ValidCliente("39053344705", clienteId)));
+
+        var response = function.HandleAsync(
+            new HttpApiAuthorizerRequest { Headers = new Dictionary<string, string> { ["aUtHoRiZaTiOn"] = "Bearer token" } },
+            new TestLambdaContext());
+
+        Assert.True(response.IsAuthorized);
+    }
 }
