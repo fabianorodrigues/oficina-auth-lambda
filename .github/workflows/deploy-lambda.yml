@@ -323,8 +323,7 @@ jobs:
           aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Resolve AWS Lambda role
-        id: role
+      - name: Validate AWS Lambda role
         shell: bash
         run: |
           set -euo pipefail
@@ -336,14 +335,11 @@ jobs:
             exit 1
           fi
 
-          echo "role_arn=${AWS_LAMBDA_ROLE_ARN}" >> "${GITHUB_OUTPUT}"
-
       - name: Deploy Auth Lambda
         shell: bash
         env:
           AUTH_ENV_FILE: ${{ runner.temp }}/auth-env.json
           AUTH_VPC_FILE: ${{ runner.temp }}/auth-vpc.json
-          ROLE_ARN: ${{ steps.role.outputs.role_arn }}
         run: |
           set -euo pipefail
 
@@ -361,7 +357,7 @@ jobs:
             if ! aws lambda update-function-configuration \
               --function-name "${AUTH_FUNCTION_NAME}" \
               --runtime "${RUNTIME}" \
-              --role "${ROLE_ARN}" \
+              --role "${AWS_LAMBDA_ROLE_ARN}" \
               --handler "${AUTH_HANDLER}" \
               --memory-size 256 \
               --timeout 15 \
@@ -378,7 +374,7 @@ jobs:
             if ! aws lambda create-function \
               --function-name "${AUTH_FUNCTION_NAME}" \
               --runtime "${RUNTIME}" \
-              --role "${ROLE_ARN}" \
+              --role "${AWS_LAMBDA_ROLE_ARN}" \
               --handler "${AUTH_HANDLER}" \
               --memory-size 256 \
               --timeout 15 \
@@ -398,7 +394,6 @@ jobs:
         shell: bash
         env:
           AUTHORIZER_ENV_FILE: ${{ runner.temp }}/authorizer-env.json
-          ROLE_ARN: ${{ steps.role.outputs.role_arn }}
         run: |
           set -euo pipefail
 
@@ -416,7 +411,7 @@ jobs:
             if ! aws lambda update-function-configuration \
               --function-name "${AUTHORIZER_FUNCTION_NAME}" \
               --runtime "${RUNTIME}" \
-              --role "${ROLE_ARN}" \
+              --role "${AWS_LAMBDA_ROLE_ARN}" \
               --handler "${AUTHORIZER_HANDLER}" \
               --memory-size 256 \
               --timeout 5 \
@@ -433,7 +428,7 @@ jobs:
             if ! aws lambda create-function \
               --function-name "${AUTHORIZER_FUNCTION_NAME}" \
               --runtime "${RUNTIME}" \
-              --role "${ROLE_ARN}" \
+              --role "${AWS_LAMBDA_ROLE_ARN}" \
               --handler "${AUTHORIZER_HANDLER}" \
               --memory-size 256 \
               --timeout 5 \

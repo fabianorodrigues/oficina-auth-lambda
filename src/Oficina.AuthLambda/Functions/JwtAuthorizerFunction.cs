@@ -37,12 +37,11 @@ public sealed class JwtAuthorizerFunction
             return null;
         }
 
-        if (request.Headers.TryGetValue("Authorization", out var authorization) ||
-            request.Headers.TryGetValue("authorization", out authorization))
-        {
-            return authorization;
-        }
-
-        return null;
+        return request.Headers
+            .FirstOrDefault(header => string.Equals(
+                header.Key,
+                "authorization",
+                StringComparison.OrdinalIgnoreCase))
+            .Value;
     }
 }
