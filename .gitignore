@@ -30,3 +30,5 @@ Thumbs.db
 /payload-cliente.json
 /response-authorizer.json
 /response-cliente.json
+src/Oficina.AuthLambda/Oficina.AuthLambda.csproj.lscache
+tests/Oficina.AuthLambda.Tests/Oficina.AuthLambda.Tests.csproj.lscache
