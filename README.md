@@ -119,9 +119,10 @@ CLI:
 $env:AWS_REGION="<regiao>"
 $env:AUTH_FUNCTION_NAME="oficina-auth-cpf"
 $env:AUTHORIZER_FUNCTION_NAME="oficina-jwt-authorizer"
+$lambdaConfigQuery = '{State:State,LastUpdateStatus:LastUpdateStatus,Runtime:Runtime,Timeout:Timeout,MemorySize:MemorySize,SubnetCount:length(not_null(VpcConfig.SubnetIds, `[]`)),SecurityGroupCount:length(not_null(VpcConfig.SecurityGroupIds, `[]`))}'
 
-aws lambda get-function-configuration --function-name $env:AUTH_FUNCTION_NAME --region $env:AWS_REGION --query "{State:State,LastUpdateStatus:LastUpdateStatus,Runtime:Runtime,Timeout:Timeout,MemorySize:MemorySize,SubnetCount:length(VpcConfig.SubnetIds),SecurityGroupCount:length(VpcConfig.SecurityGroupIds)}"
-aws lambda get-function-configuration --function-name $env:AUTHORIZER_FUNCTION_NAME --region $env:AWS_REGION --query "{State:State,LastUpdateStatus:LastUpdateStatus,Runtime:Runtime,Timeout:Timeout,MemorySize:MemorySize,SubnetCount:length(VpcConfig.SubnetIds),SecurityGroupCount:length(VpcConfig.SecurityGroupIds)}"
+aws lambda get-function-configuration --function-name $env:AUTH_FUNCTION_NAME --region $env:AWS_REGION --query $lambdaConfigQuery
+aws lambda get-function-configuration --function-name $env:AUTHORIZER_FUNCTION_NAME --region $env:AWS_REGION --query $lambdaConfigQuery
 ```
 
 Resultado esperado: Auth com `SubnetCount >= 1` e `SecurityGroupCount >= 1`; Authorizer com ambos iguais a `0`.
