@@ -9,6 +9,10 @@ Repositório das funções serverless de autenticação e autorização da solu�
 
 As Lambdas são publicadas depois do primeiro deploy da API (banco já migrado) e antes da criação do API Gateway.
 
+- Constrói o pacote ZIP .NET 10 das Lambdas, executa testes e empacota o artefato.
+- Cria ou atualiza as duas funções Lambda na conta AWS (idempotente).
+- Não cria a IAM role das Lambdas (pré-requisito manual) nem o API Gateway (provisionado pelo [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) root `api-gateway`).
+
 ## Tecnologias utilizadas
 
 - .NET 10
@@ -20,7 +24,7 @@ As Lambdas são publicadas depois do primeiro deploy da API (banco já migrado) 
 
 ## Solução integrada
 
-A solução Oficina é composta por 4 repositórios independentes que, juntos, formam um sistema de gestão de oficina mecânica na AWS.
+A solução Oficina é composta por 4 repositórios que formam um sistema de gestão de oficina mecânica na AWS.
 
 ```mermaid
 graph LR
@@ -32,41 +36,29 @@ graph LR
   API --> APIGW
 ```
 
-| Passo | Repositório | Workflow | Quando aplicar |
-|---|---|---|---|
-| 1 | `oficina-infra-db` | Terraform Apply | sempre |
-| 2 | `oficina-infra-k8s` root `terraform` (core) | Terraform Apply | sempre |
-| 2a | `oficina-infra-k8s` root `terraform/addons` | Terraform Apply | apenas se `LOAD_BALANCER_PROVISIONING_MODE=aws_lbc` |
-| 3 | `oficina-api` | Deploy API | sempre |
-| 4 | `oficina-auth-lambda` | Deploy Lambda | sempre |
-| 5 | `oficina-infra-k8s` root `terraform/api-gateway` | Terraform API Gateway Apply | sempre |
-| 6 | `oficina-api` | Deploy API (redeploy) | se o pod precisar refletir `public-base-url` recém-criado em e-mails |
+| Passo | Repositório | Quando aplicar |
+|---|---|---|
+| 1 | [oficina-infra-db](https://github.com/fabianorodrigues/oficina-infra-db) | sempre |
+| 2 | [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — core | sempre |
+| 2a | [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — addons | apenas se `LOAD_BALANCER_PROVISIONING_MODE=aws_lbc` |
+| 3 | [oficina-api](https://github.com/fabianorodrigues/oficina-api) | sempre |
+| 4 | [oficina-auth-lambda](https://github.com/fabianorodrigues/oficina-auth-lambda) | sempre |
+| 5 | [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — api-gateway | sempre |
+| 6 | [oficina-api](https://github.com/fabianorodrigues/oficina-api) — redeploy | se o pod precisar refletir `public-base-url` em e-mails |
 
 Cada README detalha apenas a responsabilidade do seu repositório. Para o passo a passo dos demais, consulte os READMEs correspondentes.
-
-## Responsabilidade deste repositório
-
-- Constrói o pacote ZIP .NET 10 das Lambdas, executa testes e empacota o artefato.
-- Cria ou atualiza as duas funções Lambda na conta AWS (idempotente).
-- Configura VPC e ambiente apenas onde aplicável: `auth-cpf` tem VPC e connection string; `jwt-authorizer` não.
-- Não cria a IAM role das Lambdas (pré-requisito manual) nem o API Gateway (provisionado pelo `oficina-infra-k8s` root `api-gateway`).
 
 ## Arquitetura
 
 ```mermaid
 graph LR
-  subgraph DEPLOY[Deploy Lambda]
-    GH[GitHub Actions] --> ZIP[Pacote ZIP .NET 10]
-    ZIP --> AC[Lambda oficina-auth-cpf]
-    ZIP --> AZ[Lambda oficina-jwt-authorizer]
-  end
-  Role[IAM Role manual] --> AC
-  Role --> AZ
-  subgraph VPC[VPC oficina - subnets privadas]
-    AC -.acessa.-> RDS[(RDS SQL Server)]
-  end
-  APIGW{API Gateway HTTP} -. POST /api/auth/cpf .-> AC
-  APIGW -. JWT Authorizer .-> AZ
+  GH[GitHub Actions] --> AUTH[Lambda auth-cpf]
+  GH --> AUTHZ[Lambda jwt-authorizer]
+  IAM[IAM Role] --> AUTH
+  IAM --> AUTHZ
+  AUTH -.VPC.-> RDS[(RDS SQL Server)]
+  APIGW[API Gateway] -->|POST /api/auth/cpf| AUTH
+  APIGW -->|JWT Authorizer| AUTHZ
 ```
 
 ## As duas Lambdas
@@ -111,47 +103,43 @@ aws iam get-role --role-name "oficina-auth-lambda-role" --query "Role.Arn" --out
 
 Configure o ARN retornado como o Secret `AWS_LAMBDA_ROLE_ARN`.
 
-## Valores consumidos
+## Configuração
 
-| Origem | Valor | Como é consumido |
+Configure em `GitHub > Settings > Secrets and variables > Actions`.
+
+> **JWT idêntico**: `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` e `JWT_EXPIRATION_MINUTES` devem ser os mesmos valores configurados no [oficina-api](https://github.com/fabianorodrigues/oficina-api). Tokens emitidos por estas Lambdas só são validados pela API se as quatro variáveis baterem.
+
+### Obrigatório
+
+| Nome | Tipo | Descrição |
 | --- | --- | --- |
-| `oficina-infra-db` | subnets privadas e SG da Lambda | configurados como CSV em `LAMBDA_SUBNET_IDS` e `LAMBDA_SECURITY_GROUP_IDS` |
-| `oficina-infra-db` | endpoint, porta e nome do banco | compõem `DB_CONNECTION_STRING` |
-| `oficina-api` | JWT `secret/issuer/audience/expiration` | devem ser **idênticos** aos configurados no `oficina-api` |
+| `AWS_ACCESS_KEY_ID` | Secret | Credencial AWS |
+| `AWS_SECRET_ACCESS_KEY` | Secret | Credencial AWS |
+| `AWS_REGION` | Secret | Região AWS |
+| `AWS_LAMBDA_ROLE_ARN` | Secret | ARN da IAM role compartilhada (ver pré-requisito) |
+| `DB_CONNECTION_STRING` | Secret | Connection string com o SQL Server (composta a partir do [oficina-infra-db](https://github.com/fabianorodrigues/oficina-infra-db)) |
+| `LAMBDA_SUBNET_IDS` | Secret | IDs das subnets privadas em CSV (obtidos do [oficina-infra-db](https://github.com/fabianorodrigues/oficina-infra-db)) |
+| `LAMBDA_SECURITY_GROUP_IDS` | Secret | IDs dos Security Groups em CSV (obtidos do [oficina-infra-db](https://github.com/fabianorodrigues/oficina-infra-db)) |
+| `JWT_SECRET` | Secret | Chave de assinatura JWT (mínimo 32 caracteres) — idêntico ao [oficina-api](https://github.com/fabianorodrigues/oficina-api) |
+| `JWT_ISSUER` | Secret | Issuer JWT — idêntico ao [oficina-api](https://github.com/fabianorodrigues/oficina-api) |
+| `JWT_AUDIENCE` | Secret | Audience JWT — idêntico ao [oficina-api](https://github.com/fabianorodrigues/oficina-api) |
+| `JWT_EXPIRATION_MINUTES` | Secret | Expiração dos tokens em minutos — idêntico ao [oficina-api](https://github.com/fabianorodrigues/oficina-api) |
 
-## Valores gerados
+### Opcional
 
-- Função Lambda `oficina-auth-cpf` (ou nome customizado via `AUTH_FUNCTION_NAME`) — consumida pelo root `api-gateway` do `oficina-infra-k8s` como integração da rota `POST /api/auth/cpf`.
-- Função Lambda `oficina-jwt-authorizer` (ou nome customizado via `AUTHORIZER_FUNCTION_NAME`) — consumida pelo root `api-gateway` como authorizer da rota `ANY /api/{proxy+}`.
-
-## Configuração necessária
-
-> **JWT idêntico**: `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` e `JWT_EXPIRATION_MINUTES` devem ser os mesmos valores configurados no `oficina-api`. Tokens emitidos por estas Lambdas só são validados pela API se as quatro variáveis baterem.
-
-| Nome | Tipo | Obrigatório | Origem ou Default | Descrição |
-| --- | --- | --- | --- | --- |
-| `AWS_ACCESS_KEY_ID` | Secret | Sim | — | Credencial AWS |
-| `AWS_SECRET_ACCESS_KEY` | Secret | Sim | — | Credencial AWS |
-| `AWS_SESSION_TOKEN` | Secret | Não | — | Credenciais temporárias (STS) |
-| `AWS_REGION` | Secret | Sim | — | Região AWS |
-| `AWS_LAMBDA_ROLE_ARN` | Secret | Sim | Criada manualmente (ver pré-requisito) | ARN da IAM role compartilhada |
-| `DB_CONNECTION_STRING` | Secret | Sim | Composto a partir de `oficina-infra-db` | Connection string da Lambda Auth com o SQL Server |
-| `LAMBDA_SUBNET_IDS` | Secret | Sim | CSV obtido de `oficina-infra-db` | IDs das subnets privadas (separados por vírgula) |
-| `LAMBDA_SECURITY_GROUP_IDS` | Secret | Sim | CSV obtido de `oficina-infra-db` | IDs dos Security Groups (separados por vírgula) |
-| `JWT_SECRET` | Secret | Sim | Idêntico ao `oficina-api` | Chave de assinatura JWT (mínimo 32 caracteres) |
-| `JWT_ISSUER` | Secret | Sim | Idêntico ao `oficina-api` | Issuer JWT |
-| `JWT_AUDIENCE` | Secret | Sim | Idêntico ao `oficina-api` | Audience JWT |
-| `JWT_EXPIRATION_MINUTES` | Secret | Sim | Idêntico ao `oficina-api` | Expiração dos tokens em minutos |
-| `AUTH_FUNCTION_NAME` | Variable | Não | `oficina-auth-cpf` | Nome da Lambda de autenticação |
-| `AUTHORIZER_FUNCTION_NAME` | Variable | Não | `oficina-jwt-authorizer` | Nome da Lambda authorizer |
+| Nome | Tipo | Default | Descrição |
+| --- | --- | --- | --- |
+| `AWS_SESSION_TOKEN` | Secret | — | Credenciais temporárias (STS) |
+| `AUTH_FUNCTION_NAME` | Variable | `oficina-auth-cpf` | Nome da Lambda de autenticação |
+| `AUTHORIZER_FUNCTION_NAME` | Variable | `oficina-jwt-authorizer` | Nome da Lambda authorizer |
 
 ### Auto-provisionado pelo workflow
 
-- Criação ou atualização das duas funções Lambda com runtime, memória, timeout, VPC config (apenas na `auth-cpf`) e variáveis de ambiente.
+Criação ou atualização das duas funções Lambda com runtime, memória, timeout, VPC config (apenas na `auth-cpf`) e variáveis de ambiente.
 
 ### Obtendo LAMBDA_SUBNET_IDS e LAMBDA_SECURITY_GROUP_IDS
 
-Após o deploy do `oficina-infra-db`:
+Após o deploy do [oficina-infra-db](https://github.com/fabianorodrigues/oficina-infra-db):
 
 ```powershell
 $env:AWS_REGION="<regiao>"
@@ -168,7 +156,7 @@ aws ec2 describe-security-groups --region $env:AWS_REGION `
 
 Configure os valores como `LAMBDA_SUBNET_IDS` e `LAMBDA_SECURITY_GROUP_IDS`, separados por vírgula quando houver mais de um ID.
 
-## Como executar
+## Execução
 
 O deploy manual deve ser disparado a partir da branch `main`:
 
@@ -178,7 +166,7 @@ GitHub Actions > Deploy Lambda > Run workflow
 
 O workflow valida configuração, compila, testa, empacota, cria ou atualiza as duas Lambdas e valida a configuração final sem imprimir secrets, connection string, ARNs ou dados sensíveis.
 
-## Como validar pela AWS
+## Validação
 
 ### Console
 
@@ -201,7 +189,7 @@ aws lambda get-function-configuration --function-name $env:AUTHORIZER_FUNCTION_N
 
 Resultado esperado: `auth-cpf` com `SubnetCount >= 1` e `SecurityGroupCount >= 1`; `authorizer` com ambos iguais a `0`.
 
-## Como executar localmente
+## Execução local
 
 Não há Docker Compose. Localmente é possível apenas compilar e rodar os testes unitários. Validação funcional requer Lambda já implantada.
 
@@ -239,8 +227,6 @@ Invocação com payloads de exemplo (requer AWS CLI e Lambdas já implantadas). 
 }
 ```
 
-No payload do authorizer, substitua `<jwt-gerado-pela-lambda-auth>` pelo token retornado pela Lambda `oficina-auth-cpf`.
-
 ```powershell
 $env:AWS_REGION="<regiao>"
 $env:AUTH_FUNCTION_NAME="oficina-auth-cpf"
@@ -255,14 +241,14 @@ aws lambda invoke --function-name $env:AUTHORIZER_FUNCTION_NAME --region $env:AW
   response-authorizer-local.json; Get-Content response-authorizer-local.json
 ```
 
-## Monitoramento e Observabilidade
+## Observabilidade
 
 As Lambdas emitem logs estruturados em JSON no CloudWatch usando `correlationId = context.AwsRequestId`. Registram sucesso e falha de autenticação por CPF e allow, deny ou falha do authorizer, sem expor CPF completo, senha, JWT ou connection string.
 
 ### Configurar
 
 - Não há secrets adicionais. A IAM role configurada como `AWS_LAMBDA_ROLE_ARN` já tem `AWSLambdaBasicExecutionRole` (pré-requisito), o que habilita logs em CloudWatch automaticamente.
-- Não há New Relic Lambda Forwarder nem New Relic Lambda Layer como requisito padrão. A coleta centralizada pode ser feita posteriormente por estratégia de logs da conta, sem acoplar IAM adicional a estas funções.
+- Não há New Relic Lambda Forwarder nem New Relic Lambda Layer como requisito padrão.
 
 ### Executar
 
@@ -294,4 +280,4 @@ aws logs filter-log-events --log-group-name "/aws/lambda/$($env:AUTH_FUNCTION_NA
 
 ## Próxima etapa
 
-Aplicar o root `terraform/api-gateway` do `oficina-infra-k8s` para criar a entrada pública e integrar a API, a Lambda Auth e a Lambda Authorizer.
+Aplicar o root `terraform/api-gateway` do [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) para criar a entrada pública e integrar a API, a Lambda Auth e a Lambda Authorizer.
