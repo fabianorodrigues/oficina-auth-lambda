@@ -6,6 +6,7 @@ using Amazon.Lambda.Core;
 using Oficina.AuthLambda.Application.Services;
 using Oficina.AuthLambda.Contracts.Auth;
 using Oficina.AuthLambda.Domain.Exceptions;
+using Oficina.AuthLambda.Observability;
 
 namespace Oficina.AuthLambda.Functions;
 
@@ -33,15 +34,17 @@ public sealed class AuthCpfFunction
         {
             var authRequest = ParseRequest(request);
             var result = await _authService.AuthenticateAsync(authRequest, CancellationToken.None);
+            SafeLambdaLogger.Log(context, "AutenticacaoCpf", "success", result.Perfil.ToString());
             return JsonResponse((int)HttpStatusCode.OK, AuthCpfResponse.FromResult(result));
         }
         catch (AuthException ex)
         {
+            SafeLambdaLogger.Log(context, "AutenticacaoCpf", "failure", errorType: ex.GetType().Name);
             return JsonResponse(ex.StatusCode, new ErrorResponse(ex.Message));
         }
         catch (Exception ex)
         {
-            context.Logger.LogLine($"Unexpected authentication error: {ex.GetType().Name}");
+            SafeLambdaLogger.Log(context, "AutenticacaoCpf", "failure", errorType: ex.GetType().Name);
             return JsonResponse(
                 (int)HttpStatusCode.InternalServerError,
                 new ErrorResponse("Unexpected error."));
