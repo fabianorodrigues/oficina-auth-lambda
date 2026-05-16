@@ -248,7 +248,6 @@ As Lambdas emitem logs estruturados em JSON no CloudWatch usando `correlationId 
 ### Configurar
 
 - Não há secrets adicionais. A IAM role configurada como `AWS_LAMBDA_ROLE_ARN` já tem `AWSLambdaBasicExecutionRole` (pré-requisito), o que habilita logs em CloudWatch automaticamente.
-- Não há New Relic Lambda Forwarder nem New Relic Lambda Layer como requisito padrão.
 
 ### Executar
 
