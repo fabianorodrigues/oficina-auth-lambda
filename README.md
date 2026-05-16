@@ -45,6 +45,7 @@ graph LR
 | 4 | [oficina-auth-lambda](https://github.com/fabianorodrigues/oficina-auth-lambda) | sempre |
 | 5 | [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — api-gateway | sempre |
 | 6 | [oficina-api](https://github.com/fabianorodrigues/oficina-api) — redeploy | se o pod precisar refletir `public-base-url` em e-mails |
+| 7 | [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — observability | opcional — somente após passo 5 |
 
 Cada README detalha apenas a responsabilidade do seu repositório. Para o passo a passo dos demais, consulte os READMEs correspondentes.
 
@@ -52,12 +53,13 @@ Cada README detalha apenas a responsabilidade do seu repositório. Para o passo 
 
 ```mermaid
 graph LR
-  GH[GitHub Actions] --> AUTH[Lambda auth-cpf]
-  GH --> AUTHZ[Lambda jwt-authorizer]
+  GH[GitHub Actions] --> ZIP[Pacote ZIP .NET 10]
+  ZIP --> AUTH[Lambda auth-cpf]
+  ZIP --> AUTHZ[Lambda jwt-authorizer]
   IAM[IAM Role] --> AUTH
   IAM --> AUTHZ
-  AUTH -.VPC.-> RDS[(RDS SQL Server)]
-  APIGW[API Gateway] -->|POST /api/auth/cpf| AUTH
+  AUTH -.VPC + 1433.-> RDS[(RDS SQL Server)]
+  APIGW[API Gateway] -->|POST \/api\/auth\/cpf| AUTH
   APIGW -->|JWT Authorizer| AUTHZ
 ```
 
@@ -95,8 +97,11 @@ $trust | Out-File -Encoding ascii -FilePath trust-lambda.json
 
 aws iam create-role --role-name "oficina-auth-lambda-role" --assume-role-policy-document file://trust-lambda.json --query "Role.RoleName"
 
-aws iam attach-role-policy --role-name "oficina-auth-lambda-role" --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-aws iam attach-role-policy --role-name "oficina-auth-lambda-role" --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+$basicPolicyArn = aws iam list-policies --scope AWS --query "Policies[?PolicyName=='AWSLambdaBasicExecutionRole'].Arn | [0]" --output text
+$vpcPolicyArn = aws iam list-policies --scope AWS --query "Policies[?PolicyName=='AWSLambdaVPCAccessExecutionRole'].Arn | [0]" --output text
+
+aws iam attach-role-policy --role-name "oficina-auth-lambda-role" --policy-arn $basicPolicyArn
+aws iam attach-role-policy --role-name "oficina-auth-lambda-role" --policy-arn $vpcPolicyArn
 
 aws iam get-role --role-name "oficina-auth-lambda-role" --query "Role.Arn" --output text
 ```
@@ -279,4 +284,4 @@ aws logs filter-log-events --log-group-name "/aws/lambda/$($env:AUTH_FUNCTION_NA
 
 ## Próxima etapa
 
-Aplicar o root `terraform/api-gateway` do [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) para criar a entrada pública e integrar a API, a Lambda Auth e a Lambda Authorizer.
+Aplicar o root `terraform/api-gateway` do [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) para criar a entrada pública e integrar a API, a Lambda Auth e a Lambda Authorizer. Depois que a URL pública estiver validada, o root `terraform/observability` do [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) pode ser aplicado como passo 7 opcional.
