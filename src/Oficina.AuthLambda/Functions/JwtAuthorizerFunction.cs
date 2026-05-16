@@ -1,6 +1,7 @@
 using Amazon.Lambda.Core;
 using Oficina.AuthLambda.Application.Services;
 using Oficina.AuthLambda.Contracts.Authorizer;
+using Oficina.AuthLambda.Observability;
 
 namespace Oficina.AuthLambda.Functions;
 
@@ -22,10 +23,13 @@ public sealed class JwtAuthorizerFunction
     {
         try
         {
-            return _authorizer.Authorize(GetAuthorizationHeader(request));
+            var response = _authorizer.Authorize(GetAuthorizationHeader(request));
+            SafeLambdaLogger.Log(context, "JwtAuthorizer", response.IsAuthorized ? "allow" : "deny");
+            return response;
         }
-        catch
+        catch (Exception ex)
         {
+            SafeLambdaLogger.Log(context, "JwtAuthorizer", "failure", errorType: ex.GetType().Name);
             return AuthorizerResponse.Deny();
         }
     }

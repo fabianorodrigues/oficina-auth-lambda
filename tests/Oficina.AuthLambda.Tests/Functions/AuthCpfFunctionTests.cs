@@ -17,10 +17,12 @@ public class AuthCpfFunctionTests
     public async Task EmptyBody_ShouldReturn400WithErrorContract()
     {
         var function = CreateFunction();
+        var context = new TestLambdaContext();
 
-        var response = await function.HandleAsync(new APIGatewayHttpApiV2ProxyRequest { Body = "" }, new TestLambdaContext());
+        var response = await function.HandleAsync(new APIGatewayHttpApiV2ProxyRequest { Body = "" }, context);
 
         AssertErrorResponse(response, 400);
+        AssertLog(context, "AutenticacaoCpf", "failure");
     }
 
     [Fact]
@@ -52,15 +54,17 @@ public class AuthCpfFunctionTests
     {
         var body = Convert.ToBase64String(Encoding.UTF8.GetBytes("{\"cpf\":\"39053344705\"}"));
         var function = CreateFunction(new ClienteAuth(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), Cpf.Parse("39053344705")));
+        var context = new TestLambdaContext();
 
         var response = await function.HandleAsync(
             new APIGatewayHttpApiV2ProxyRequest { Body = body, IsBase64Encoded = true },
-            new TestLambdaContext());
+            context);
 
         var auth = JsonSerializer.Deserialize<AuthCpfResponse>(response.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
         Assert.Equal(200, response.StatusCode);
         Assert.Equal("token-cliente", auth!.AccessToken);
+        AssertLog(context, "AutenticacaoCpf", "success");
     }
 
     private static AuthCpfFunction CreateFunction(ClienteAuth? cliente = null)
@@ -81,5 +85,18 @@ public class AuthCpfFunctionTests
         using var document = JsonDocument.Parse(response.Body);
         Assert.True(document.RootElement.TryGetProperty("erro", out var erro));
         Assert.False(string.IsNullOrWhiteSpace(erro.GetString()));
+    }
+
+    private static void AssertLog(TestLambdaContext context, string eventType, string outcome)
+    {
+        var logger = Assert.IsType<TestLambdaLogger>(context.Logger);
+        var log = Assert.Single(logger.Lines);
+        using var document = JsonDocument.Parse(log);
+
+        Assert.Equal("request-id", document.RootElement.GetProperty("correlationId").GetString());
+        Assert.Equal(eventType, document.RootElement.GetProperty("eventType").GetString());
+        Assert.Equal(outcome, document.RootElement.GetProperty("outcome").GetString());
+        Assert.DoesNotContain("39053344705", log);
+        Assert.DoesNotContain("token-cliente", log);
     }
 }
