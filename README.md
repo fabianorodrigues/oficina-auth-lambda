@@ -26,7 +26,7 @@ Funções serverless de autenticação e autorização da solução Oficina.
 
 ## <a id="visão-geral"></a> 🎯 Visão geral
 
-Duas funções Lambda em .NET 10:
+**Passo 4** da solução Oficina. Duas funções Lambda em .NET 10:
 
 - **`oficina-auth-cpf`**: valida CPF, consulta cliente ou funcionário no SQL Server e emite JWT.
 - **`oficina-jwt-authorizer`**: valida JWT nas rotas protegidas do API Gateway.
@@ -64,9 +64,6 @@ graph LR
 | 5 | [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — api-gateway | sempre |
 | 6 | [oficina-api](https://github.com/fabianorodrigues/oficina-api) — redeploy | opcional, se `public-base-url` precisa entrar nos e-mails |
 | 7 | [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — observability | opcional, após o passo 5 |
-
-> [!NOTE]
-> No passo 2, o Metrics Server é sempre instalado (HPA da API depende dele); o AWS Load Balancer Controller só é instalado quando `LOAD_BALANCER_PROVISIONING_MODE=aws_lbc`.
 
 ---
 
@@ -120,7 +117,7 @@ graph LR
 | Origem | Valores |
 | --- | --- |
 | `oficina-infra-db` | `db_address`, `db_port` (compõem `DB_CONNECTION_STRING`), `lambda_subnet_id`, `lambda_security_group_id` |
-| `oficina-api` (passo 3) | RDS já migrado (tabelas `Cliente` e `Funcionario`) |
+| `oficina-api` (passo 3) | RDS já migrado (tabelas `Clientes` e `Funcionarios`) |
 | `oficina-api` | JWT (`JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_EXPIRATION_MINUTES`) — idênticos |
 
 **Gera:**
@@ -366,3 +363,6 @@ aws logs filter-log-events --log-group-name "/aws/lambda/$($env:AUTH_FUNCTION_NA
 ## <a id="próxima-etapa"></a> ➡️ Próxima etapa
 
 Aplicar o root `terraform/api-gateway` do [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — **passo 5** — para criar a entrada pública e integrar API, `auth-cpf` e `jwt-authorizer`. Depois que a URL pública estiver validada, o **passo 7 (observability)** pode ser aplicado como opcional.
+
+> [!TIP]
+> **Checkpoint antes do passo 5:** ambas as funções com `LastUpdateStatus=Successful`; `oficina-auth-cpf` com `VpcConfig` (subnets e security groups), `oficina-jwt-authorizer` sem VPC. JWT (`Secret`, `Issuer`, `Audience`, `ExpirationMinutes`) idêntico ao configurado no [oficina-api](https://github.com/fabianorodrigues/oficina-api).
