@@ -1,11 +1,12 @@
 # oficina-auth-lambda
 
-Funções serverless de autenticação e autorização da solução Oficina.
+Funções *serverless* de autenticação e autorização da solução Oficina.
 
 [![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)]()
 [![AWS Lambda](https://img.shields.io/badge/AWS-Lambda%20dotnet10-FF9900?logo=aws-lambda&logoColor=white)]()
 [![API Gateway](https://img.shields.io/badge/AWS-API%20Gateway%20Authorizer-FF4F8B?logo=amazon-aws&logoColor=white)]()
-[![CI/CD](https://img.shields.io/badge/GitHub%20Actions-CI%2FCD-2088FF?logo=github-actions&logoColor=white)]()
+[![CI](https://github.com/fabianorodrigues/oficina-auth-lambda/actions/workflows/ci.yml/badge.svg)](https://github.com/fabianorodrigues/oficina-auth-lambda/actions/workflows/ci.yml)
+[![Deploy Lambda](https://github.com/fabianorodrigues/oficina-auth-lambda/actions/workflows/deploy-lambda.yml/badge.svg)](https://github.com/fabianorodrigues/oficina-auth-lambda/actions/workflows/deploy-lambda.yml)
 
 ## Sumário
 
@@ -26,33 +27,57 @@ Funções serverless de autenticação e autorização da solução Oficina.
 
 ## <a id="visão-geral"></a> 🎯 Visão geral
 
-**Passo 4** da solução Oficina. Duas funções Lambda em .NET 10:
+**Passo 4** da solução Oficina. Duas funções AWS Lambda em .NET 10:
 
-- **`oficina-auth-cpf`**: valida CPF, consulta cliente ou funcionário no SQL Server e emite JWT.
-- **`oficina-jwt-authorizer`**: valida JWT nas rotas protegidas do API Gateway.
+- **`oficina-auth-cpf`** — valida CPF, consulta cliente ou funcionário no SQL Server e emite o JWT.
+- **`oficina-jwt-authorizer`** — valida JWT nas rotas protegidas do API Gateway, atuando como *Lambda Authorizer*.
 
-Publicadas após o 1º deploy da API (RDS já migrado) e antes da criação do API Gateway.
+As Lambdas são publicadas após o 1º *deploy* da API (RDS já migrado) e antes da criação do API Gateway.
 
-- Workflow constrói o pacote ZIP, executa testes e empacota.
-- Cria ou atualiza as duas funções na AWS (idempotente).
+- O workflow constrói o pacote ZIP, executa testes unitários e empacota o artefato.
+- Cria ou atualiza ambas as funções na AWS de forma idempotente.
 - Não cria a IAM Role das Lambdas (pré-requisito manual) nem o API Gateway (provisionado pelo passo 5 do `oficina-infra-k8s`).
 
-**Tecnologias:** .NET 10, AWS Lambda (runtime `dotnet10`), AWS API Gateway Authorizer, AWS VPC e RDS SQL Server, CloudWatch Logs, GitHub Actions.
+**Tecnologias:** .NET 10, AWS Lambda (runtime `dotnet10`), AWS API Gateway *Lambda Authorizer*, AWS VPC e RDS SQL Server, CloudWatch Logs, GitHub Actions.
 
 ---
 
 ## <a id="solução-integrada"></a> 🧩 Solução integrada
 
-A solução Oficina é composta por 4 repositórios que formam um sistema de gestão de oficina mecânica na AWS.
+A solução Oficina é composta por 4 repositórios que formam, em conjunto, um sistema de gestão de oficina mecânica na AWS. O diagrama abaixo mostra o **fluxo de runtime** (setas sólidas) e o **fluxo de configuração** entre componentes (setas tracejadas).
 
 ```mermaid
-graph LR
-  DB[oficina-infra-db<br/>VPC + RDS] --> K8S[oficina-infra-k8s<br/>EKS + ECR + NLB + Addons]
-  DB --> LMB[oficina-auth-lambda<br/>auth-cpf + jwt-authorizer]
-  K8S --> API[oficina-api<br/>.NET 10 no EKS]
-  K8S --> APIGW[oficina-infra-k8s<br/>API Gateway + VPC Link]
-  LMB --> APIGW
-  API --> APIGW
+flowchart LR
+    classDef db    fill:#5B9BD5,color:#fff,stroke:#1F4E79
+    classDef k8s   fill:#FF9900,color:#fff,stroke:#B36B00
+    classDef api   fill:#512BD4,color:#fff,stroke:#3A1FA0
+    classDef lmb   fill:#F58536,color:#fff,stroke:#A84B0F
+    classDef store fill:#3F8624,color:#fff,stroke:#2A5C18
+    classDef ext   fill:#EFEFEF,color:#333,stroke:#999
+
+    USER([Cliente HTTPS<br/>navegador / mobile / Postman]):::ext
+
+    subgraph PUB[Entrada pública - oficina-infra-k8s api-gateway]
+      direction TB
+      APIGW[/HTTP API Gateway/]:::k8s
+      AUTHZ[JWT Authorizer<br/>jwt-authorizer Lambda]:::lmb
+    end
+
+    AUTH[auth-cpf Lambda<br/>oficina-auth-lambda]:::lmb
+    NLB[NLB + VPC Link<br/>oficina-infra-k8s core]:::k8s
+    API[oficina-api<br/>.NET 10 em EKS]:::api
+    RDS[(RDS SQL Server<br/>oficina-infra-db)]:::db
+    SSM[(SSM Parameter Store<br/>backend-listener-arn<br/>public-base-url)]:::store
+
+    USER -->|HTTPS| APIGW
+    APIGW -->|POST /api/auth/cpf| AUTH
+    APIGW -->|ANY /api/proxy+| AUTHZ
+    AUTHZ -. autoriza .-> APIGW
+    APIGW -->|/health, /api/proxy+| NLB
+    NLB --> API
+    AUTH -->|consulta clientes/funcionarios| RDS
+    API -->|EF Core| RDS
+    API -. publica/lê .-> SSM
 ```
 
 | Passo | Repositório | Quando |
@@ -70,43 +95,67 @@ graph LR
 ## <a id="arquitetura"></a> 🏗️ Arquitetura
 
 ```mermaid
-graph LR
-  subgraph GH[GitHub Actions]
-    BUILD[Build .NET 10] --> ZIP[Pacote ZIP]
-  end
-  subgraph AWS[AWS]
-    IAM[IAM Role compartilhada]
-    AUTH[Lambda auth-cpf<br/>VPC + RDS]
-    AUTHZ[Lambda jwt-authorizer<br/>sem VPC]
-    RDS[(RDS SQL Server)]
-    CW[(CloudWatch Logs)]
-  end
-  subgraph APIGW[API Gateway -- passo 5]
-    ROUTE[POST /api/auth/cpf]
-    AUTHORIZER[JWT Authorizer]
-  end
-  ZIP --> AUTH
-  ZIP --> AUTHZ
-  IAM --> AUTH
-  IAM --> AUTHZ
-  AUTH -.TCP 1433.-> RDS
-  AUTH --> CW
-  AUTHZ --> CW
-  ROUTE --> AUTH
-  AUTHORIZER --> AUTHZ
+flowchart LR
+    classDef lmb   fill:#F58536,color:#fff,stroke:#A84B0F
+    classDef k8s   fill:#FF9900,color:#fff,stroke:#B36B00
+    classDef db    fill:#5B9BD5,color:#fff,stroke:#1F4E79
+    classDef api   fill:#512BD4,color:#fff,stroke:#3A1FA0
+    classDef store fill:#3F8624,color:#fff,stroke:#2A5C18
+    classDef ext   fill:#EFEFEF,color:#333,stroke:#999
+
+    USER([Cliente HTTPS]):::ext
+
+    subgraph APIGW[API Gateway - passo 5]
+      direction TB
+      R1[/POST /api/auth/cpf/]:::k8s
+      R2[/ANY /api/proxy+/]:::k8s
+    end
+
+    subgraph LMBS[Lambdas dotnet10 - passo 4]
+      direction TB
+      AUTH[oficina-auth-cpf<br/>VPC, 15s, 256MB]:::lmb
+      AUTHZ[oficina-jwt-authorizer<br/>sem VPC, 5s, 256MB]:::lmb
+    end
+
+    BACKEND[API .NET no EKS]:::api
+    RDS[(RDS SQL Server)]:::db
+    CW[(CloudWatch Logs)]:::store
+
+    USER -->|cpf + senha| R1
+    R1 --> AUTH
+    AUTH -->|consulta Clientes/Funcionarios| RDS
+    AUTH -->|emite JWT| R1
+    R1 -->|accessToken| USER
+
+    USER -->|Bearer JWT| R2
+    R2 -. authorizer .-> AUTHZ
+    AUTHZ -->|isAuthorized| R2
+    R2 --> BACKEND
+
+    AUTH --> CW
+    AUTHZ --> CW
 ```
+
+O fluxo do JWT é assimétrico: `auth-cpf` emite o token, entrega ao cliente, e o cliente o reapresenta como `Bearer` na próxima requisição protegida. O API Gateway delega a validação ao `jwt-authorizer`, que aprova ou nega o acesso ao backend EKS — sem que as duas Lambdas precisem se comunicar diretamente.
 
 ---
 
 ## <a id="as-duas-lambdas"></a> λ As duas Lambdas
 
-| Função | Memória | Timeout | VPC | Acesso ao RDS | Variáveis |
+| Função | Memória | Timeout | VPC | Acesso ao RDS | Variáveis de ambiente |
 | --- | --- | --- | --- | --- | --- |
 | `oficina-auth-cpf` | 256 MB | 15 s | sim | sim | JWT (4) + `ConnectionStrings__SqlServer` |
 | `oficina-jwt-authorizer` | 256 MB | 5 s | não | não | apenas JWT (4) |
 
 > [!NOTE]
-> A função `auth-cpf` precisa de VPC para consultar o RDS. A `jwt-authorizer` apenas valida o token (operação local) — sem VPC fica mais rápida e sem cold start de ENI.
+> A função `auth-cpf` precisa de VPC para consultar o RDS. A `jwt-authorizer` apenas valida o token (operação puramente local) — sem VPC fica mais rápida e sem o *cold start* relativo à criação de ENI.
+
+Handlers configurados pelo workflow:
+
+| Função | Handler |
+| --- | --- |
+| `oficina-auth-cpf` | `Oficina.AuthLambda::Oficina.AuthLambda.Functions.AuthCpfFunction::HandleAsync` |
+| `oficina-jwt-authorizer` | `Oficina.AuthLambda::Oficina.AuthLambda.Functions.JwtAuthorizerFunction::HandleAsync` |
 
 ---
 
@@ -132,7 +181,7 @@ graph LR
 ## <a id="pré-requisitos-manuais"></a> 🔑 Pré-requisitos manuais
 
 > [!IMPORTANT]
-> O workflow **não cria** a IAM Role. Crie a role uma vez e referencie pelo Secret `AWS_LAMBDA_ROLE_ARN`. As duas funções compartilham a mesma role.
+> O workflow **não cria** a IAM Role. Crie a role uma vez e referencie pelo secret `AWS_LAMBDA_ROLE_ARN`. As duas funções compartilham a mesma role.
 
 | Item | Valor |
 | --- | --- |
@@ -141,9 +190,9 @@ graph LR
 | Política gerenciada | `AWSLambdaVPCAccessExecutionRole` (necessária para `auth-cpf`) |
 
 > [!IMPORTANT]
-> O **passo 3 (`oficina-api`) deve estar concluído** antes deste — sem o RDS migrado, a Lambda `auth-cpf` falha ao consultar `Cliente`/`Funcionario`.
+> O **passo 3 (`oficina-api`) deve estar concluído** antes deste — sem o RDS migrado, a Lambda `auth-cpf` falha ao consultar `Cliente` ou `Funcionario`.
 
-Criar a role (PowerShell):
+Criação da role (PowerShell):
 
 ```powershell
 $env:AWS_REGION="<regiao>"
@@ -169,7 +218,7 @@ aws iam attach-role-policy --role-name "oficina-auth-lambda-role" --policy-arn $
 aws iam get-role --role-name "oficina-auth-lambda-role" --query "Role.Arn" --output text
 ```
 
-Use o ARN retornado no Secret `AWS_LAMBDA_ROLE_ARN`.
+Use o ARN retornado como valor do secret `AWS_LAMBDA_ROLE_ARN`.
 
 ---
 
@@ -178,9 +227,9 @@ Use o ARN retornado no Secret `AWS_LAMBDA_ROLE_ARN`.
 Configure em **GitHub > Settings > Secrets and variables > Actions**.
 
 > [!IMPORTANT]
-> **JWT idêntico** ao [oficina-api](https://github.com/fabianorodrigues/oficina-api): se `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` ou `JWT_EXPIRATION_MINUTES` divergir, tokens emitidos por estas Lambdas não são aceitos pela API.
+> **JWT idêntico** ao [oficina-api](https://github.com/fabianorodrigues/oficina-api): se `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` ou `JWT_EXPIRATION_MINUTES` divergir, os tokens emitidos por estas Lambdas não são aceitos pela API.
 
-### AWS e Role
+### AWS e role
 
 | Nome | Tipo | Obrigatório | Descrição |
 | --- | --- | --- | --- |
@@ -192,29 +241,29 @@ Configure em **GitHub > Settings > Secrets and variables > Actions**.
 
 | Nome | Tipo | Obrigatório | Descrição |
 | --- | --- | --- | --- |
-| `DB_CONNECTION_STRING` | Secret | sim | Connection string SQL Server |
-| `LAMBDA_SUBNET_IDS` | Secret | sim | IDs de subnets privadas em CSV |
-| `LAMBDA_SECURITY_GROUP_IDS` | Secret | sim | IDs de Security Groups em CSV |
+| `DB_CONNECTION_STRING` | Secret | sim | *Connection string* do SQL Server |
+| `LAMBDA_SUBNET_IDS` | Secret | sim | IDs de *subnets* privadas em CSV (formato `subnet-xxxxxxxx`) |
+| `LAMBDA_SECURITY_GROUP_IDS` | Secret | sim | IDs de *Security Groups* em CSV (formato `sg-xxxxxxxx`) |
 
 ### JWT
 
 | Nome | Tipo | Obrigatório | Descrição |
 | --- | --- | --- | --- |
-| `JWT_SECRET` | Secret | sim | Chave de assinatura (mínimo 32 caracteres) |
+| `JWT_SECRET` | Secret | sim | Chave de assinatura (mínimo 32 caracteres, HS256) |
 | `JWT_ISSUER` | Secret | sim | Issuer JWT |
 | `JWT_AUDIENCE` | Secret | sim | Audience JWT |
-| `JWT_EXPIRATION_MINUTES` | Secret | sim | Expiração em minutos |
+| `JWT_EXPIRATION_MINUTES` | Secret | sim | Expiração do token, em minutos (inteiro positivo) |
 
 ### Nomes das funções
 
 | Nome | Tipo | Default | Descrição |
 | --- | --- | --- | --- |
 | `AUTH_FUNCTION_NAME` | Variable | `oficina-auth-cpf` | Nome da Lambda de autenticação |
-| `AUTHORIZER_FUNCTION_NAME` | Variable | `oficina-jwt-authorizer` | Nome da Lambda authorizer |
+| `AUTHORIZER_FUNCTION_NAME` | Variable | `oficina-jwt-authorizer` | Nome da Lambda *authorizer* |
 
 ### Auto-provisionado pelo workflow
 
-Criação ou atualização das duas Lambdas: runtime, memória, timeout, VPC config (apenas `auth-cpf`) e variáveis de ambiente.
+Criação ou atualização das duas Lambdas (runtime, memória, timeout, VPC config apenas para `auth-cpf`, variáveis de ambiente e handlers). Todas as operações são idempotentes: o workflow aplica `update-function-code` + `update-function-configuration` quando a função já existe.
 
 ### Como obter `LAMBDA_SUBNET_IDS` e `LAMBDA_SECURITY_GROUP_IDS`
 
@@ -231,7 +280,7 @@ aws ec2 describe-security-groups --region $env:AWS_REGION `
   --query "SecurityGroups[*].GroupId" --output text
 ```
 
-Quando houver mais de um ID, separe por vírgula.
+Quando houver mais de um identificador, separe por vírgula.
 
 ---
 
@@ -243,7 +292,7 @@ O deploy só pode ser disparado da branch `main`:
 GitHub Actions > Deploy Lambda > Run workflow
 ```
 
-O workflow valida secrets e configuração, compila, testa, empacota, cria ou atualiza as duas Lambdas e valida a configuração final sem expor secrets, connection string, ARNs ou dados sensíveis.
+O workflow valida secrets e configuração, compila a solução, executa testes unitários, empacota o ZIP, cria ou atualiza as duas Lambdas e valida a configuração final sem expor secrets, *connection string*, ARNs ou demais dados sensíveis em log.
 
 ---
 
@@ -251,10 +300,10 @@ O workflow valida secrets e configuração, compila, testa, empacota, cria ou at
 
 ### Console
 
-- **Lambda**: duas funções ativas, `LastUpdateStatus=Successful`.
-- **`auth-cpf`**: VPC, subnets e Security Groups configurados.
+- **Lambda**: ambas as funções ativas, com `LastUpdateStatus=Successful`.
+- **`auth-cpf`**: VPC, *subnets* e *Security Groups* configurados.
 - **`jwt-authorizer`**: ausência de VPC.
-- **Configuration > Environment variables**: variáveis JWT presentes (sem expor valores).
+- **Configuration > Environment variables**: variáveis JWT presentes (sem expor os valores).
 
 ### CLI (PowerShell)
 
@@ -274,7 +323,7 @@ Esperado: `auth-cpf` com `SubnetCount >= 1` e `SecurityGroupCount >= 1`; `author
 
 ## <a id="execução-local"></a> 💻 Execução local
 
-Não há Docker Compose. Localmente é possível apenas compilar e rodar testes unitários. Validação funcional requer Lambda já implantada.
+Não há Docker Compose neste repositório. Localmente é possível apenas compilar e rodar os testes unitários. A validação funcional requer Lambda já implantada.
 
 ```powershell
 dotnet restore Oficina.AuthLambda.sln
@@ -284,7 +333,7 @@ dotnet test Oficina.AuthLambda.sln --configuration Release --no-build
 
 ### Invocação com payloads (requer Lambdas implantadas)
 
-Crie os arquivos na raiz do repositório.
+Crie os arquivos abaixo na raiz do repositório.
 
 `payload-cliente.json`:
 
@@ -326,22 +375,22 @@ aws lambda invoke --function-name $env:AUTHORIZER_FUNCTION_NAME --region $env:AW
 
 ## <a id="observabilidade"></a> 📊 Observabilidade
 
-As Lambdas emitem logs estruturados em JSON no CloudWatch, com `correlationId = context.AwsRequestId`. Registram sucesso e falha de autenticação por CPF e `allow`/`deny`/falha do authorizer.
+As Lambdas emitem logs estruturados em JSON no CloudWatch, com `correlationId = context.AwsRequestId`. Registram sucesso e falha de autenticação por CPF, além de `allow`/`deny`/falha do *authorizer*.
 
 > [!TIP]
-> Os logs não contêm CPF completo, senha, JWT, `Authorization` nem connection string. A redação acontece no `SafeLambdaLogger`.
+> Os logs não contêm CPF completo, senha, JWT, header `Authorization` nem *connection string*. A redação acontece no `SafeLambdaLogger`.
 
 ### Configurar
 
-Nenhum secret adicional. A IAM Role configurada como `AWS_LAMBDA_ROLE_ARN` já tem `AWSLambdaBasicExecutionRole` (pré-requisito), habilitando logs em CloudWatch automaticamente.
+Nenhum secret adicional é necessário. A IAM Role configurada como `AWS_LAMBDA_ROLE_ARN` já contém `AWSLambdaBasicExecutionRole` (pré-requisito), habilitando os logs no CloudWatch automaticamente.
 
 ### Validar
 
 **Console (CloudWatch > Logs > Log groups)**
 
-- Invocar `auth-cpf` com payload válido: confirmar `eventType=AutenticacaoCpf`, `outcome=success`, `correlationId`.
-- Invocar `auth-cpf` com payload inválido: confirmar `outcome=failure`, sem CPF completo.
-- Invocar `jwt-authorizer` com token válido/inválido: confirmar `eventType=JwtAuthorizer`, `outcome=allow` ou `deny`.
+- Invocar `auth-cpf` com payload válido: confirmar `eventType=AutenticacaoCpf`, `outcome=success` e presença de `correlationId`.
+- Invocar `auth-cpf` com payload inválido: confirmar `outcome=failure`, sem CPF completo no log.
+- Invocar `jwt-authorizer` com token válido ou inválido: confirmar `eventType=JwtAuthorizer`, `outcome=allow` ou `deny`.
 
 **CLI (PowerShell)**
 
@@ -362,7 +411,7 @@ aws logs filter-log-events --log-group-name "/aws/lambda/$($env:AUTH_FUNCTION_NA
 
 ## <a id="próxima-etapa"></a> ➡️ Próxima etapa
 
-Aplicar o root `terraform/api-gateway` do [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — **passo 5** — para criar a entrada pública e integrar API, `auth-cpf` e `jwt-authorizer`. Depois que a URL pública estiver validada, o **passo 7 (observability)** pode ser aplicado como opcional.
+Aplicar o root `terraform/api-gateway` do [oficina-infra-k8s](https://github.com/fabianorodrigues/oficina-infra-k8s) — **passo 5** — para criar a entrada pública e integrar a API, `auth-cpf` e `jwt-authorizer`. Após a URL pública estar validada, o **passo 7 (observability)** pode ser aplicado como opcional.
 
 > [!TIP]
-> **Checkpoint antes do passo 5:** ambas as funções com `LastUpdateStatus=Successful`; `oficina-auth-cpf` com `VpcConfig` (subnets e security groups), `oficina-jwt-authorizer` sem VPC. JWT (`Secret`, `Issuer`, `Audience`, `ExpirationMinutes`) idêntico ao configurado no [oficina-api](https://github.com/fabianorodrigues/oficina-api).
+> **Checkpoint antes do passo 5:** ambas as funções com `LastUpdateStatus=Successful`; `oficina-auth-cpf` com `VpcConfig` (subnets + security groups) e `oficina-jwt-authorizer` sem VPC. JWT (`Secret`, `Issuer`, `Audience`, `ExpirationMinutes`) idêntico ao configurado no [oficina-api](https://github.com/fabianorodrigues/oficina-api).
